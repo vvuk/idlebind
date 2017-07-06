@@ -1,0 +1,5 @@
+- use ES6 Proxies to handle 'as'
+-- for things that are derived in the IDL, store a C-side static_cast<B>((A*)0) in a static variable, and then read that variable
+   on the JS side to know how to adjust an A pointer to become a B
+-- use a Proxy and override 'as', so that on the JS side you can just write 'var a = something.GetA();  var b = a as B;' and have it work
+

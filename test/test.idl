@@ -1,0 +1,13 @@
+[Constructor()]
+interface ClassB
+{
+    void Foo(long num);
+};
+
+[Constructor()]
+interface ClassA
+{
+    static void StaticMethod();
+    ClassB MakeAB();
+};
+
