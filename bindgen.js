@@ -379,7 +379,7 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
   let js = '';
   for (let oi = 0; oi < overloads.length; ++oi) {
     let o = overloads[oi];
-    let sep = overloads.length == 1 ? '\n  ' : '\n    ';
+    let sep = overloads.length == 1 ? '\n    ' : '\n      ';
     let needEnsure = { value: false };
     let inner = ForNArgs(o.args, sep, (a,b,c) => MakeJSEnsureArg(a,b,c,needEnsure));
     if (needEnsure.value) {
@@ -390,17 +390,14 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
     inner += `_${CppNameFor(iface.name, name, o.args.length)}(${ForNArgs(o.args.length, !isStatic, ', ', 'arg')});`;
 
     if (o.args.length != maxArgs) {
-      if (oi != 0) {
-        js += '  else ';
-      } else {
-        js += '  ';
-      }
-      js += `if (arg${o.args.length} === undefined) {\n    ${inner}\n  }\n`;
+      js += '    ';
+      if (oi != 0) js += 'else ';
+      js += `if (arg${o.args.length} === undefined) {\n      ${inner}\n    }\n`;
     } else {
       if (oi != 0)
-        js += `  else {\n    ${inner}\n  }`;
+        js += `    else {\n      ${inner}\n    }`;
       else
-        js += `  ${inner}`;
+        js += `    ${inner}`;
     }
   }
   return js;
@@ -422,19 +419,21 @@ function handleInterfaceConstructors(iface) {
 
   // generate the JS
   let js = '';
-  js += ` constructor(${ForNArgs(maxArgs, 'arg')}) {\n`;
+  js += `  constructor(${ForNArgs(maxArgs, 'arg')}) {\n`;
   // we should check and see if an arg in this position could
   // possibly be an object, and only do this if so
   if (constructors.length == 0) {
-    js += `  throw "No constructor defined for ${iface.name}";\n`
+    js += `    throw "No constructor defined for ${iface.name}";\n`
   } else {
-    js += '  let ret;\n';
-    js += makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors);
-    js += '\n';
-    js += `  this.ptr = ret;\n`;
-    js += `  ${iface.name}.__setCache(this);\n`;
+    js += `
+    let ret, obj = Object.create(new.target.prototype);
+    ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors)}
+    obj.ptr = ret;
+    ${iface.name}.__setCache(obj);
+    return obj;
+`;
   }
-  js += ' }\n';
+  js += '  }\n';
 
   // generate the C++
   var cpp = '';
@@ -501,30 +500,30 @@ function handleInterfaceMethods(iface) {
     for (let o of overloads) maxArgs = Math.max(o.args.length, maxArgs);
 
     let js = '';
-    js += isStatic ? ' static' : '';
-    js += ` ${jsName}(${ForNArgs(maxArgs, 'arg')}) {\n`;
-    js += isStatic ? '' : '  let self = this.ptr;\n';
-    js += rtype ? '  let ret;\n' : '';
+    js += isStatic ? '  static ' : '  ';
+    js += `${jsName}(${ForNArgs(maxArgs, 'arg')}) {\n`;
+    js += isStatic ? '' : '    let self = this.ptr;\n';
+    js += rtype ? '    let ret;\n' : '';
     js += makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
     js += '\n';
     if (rtype) {
       if (isBasicType(rtype)) {
-        js += '  return ret;\n';
+        js += '    return ret;\n';
       } else {
         if (rtype === 'DOMString') {
-          js += '  return Pointer_stringify(ret);\n';
+          js += '    return Pointer_stringify(ret);\n';
         } else if (rtype in interfaces) {
-          js += `  return ${rtype}.__wrap(ret);\n`;
+          js += `    return ${rtype}.__wrap(ret);\n`;
         } else if (typeof(rtype) == 'string') {
-          js += `  return OpaqueWrapperType.__wrap(ret);\n`;
+          js += `    return OpaqueWrapperType.__wrap(ret);\n`;
         } else if (isByValInterfaceType(rtype)) {
-          js += `  return ${rtype.idlType}.__wrapNoCache(ret);\n`;
+          js += `    return ${rtype.idlType}.__wrapNoCache(ret);\n`;
         } else {
           throw `Don't know how to handle return types of ${prettyjson.render(rtype)}`;
         }
       }
     }
-    js += ' }\n';
+    js += '  }\n';
 
     let cpp = '';
     for (let o of overloads) {
@@ -566,37 +565,37 @@ function handleInterface(iface) {
   let js = `
 var ${iface.name}___CACHE = {};
 class ${iface.name} ${superclass ? 'extends ' + superclass : ''}{
- static __setCache(obj) {
-  ${iface.name}___CACHE[obj.ptr] = obj;
- }
-
- static __wrap(ptr) {
-  let obj = ${iface.name}___CACHE[ptr];
-  if (!obj) {
-   obj = Object.create(${iface.name}.prototype);
-   obj.ptr = ptr;
-   ${iface.name}___CACHE[ptr] = obj;
-  }
-  return obj;
- }
-
- static __wrapNoCache(ptr) {
-  let obj = Object.create(${iface.name}.prototype);
-  obj.ptr = ptr;
-  return obj;
- }
-
 ${constructors.js}
 
 ${methods.js}
+
+  static __setCache(obj) {
+    ${iface.name}___CACHE[obj.ptr] = obj;
+  }
+
+  static __wrap(ptr) {
+    let obj = ${iface.name}___CACHE[ptr];
+    if (!obj) {
+      obj = Object.create(${iface.name}.prototype);
+      obj.ptr = ptr;
+      ${iface.name}___CACHE[ptr] = obj;
+    }
+    return obj;
+  }
+
+  static __wrapNoCache(ptr) {
+    let obj = Object.create(${iface.name}.prototype);
+    obj.ptr = ptr;
+    return obj;
+  }
 `;
   if (!iface.noDestroy) {
     js += `
- destroy() {
-  _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
-  delete ${iface.name}___CACHE[this.ptr];
-  delete this.ptr;
- }
+  destroy() {
+    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
+    delete ${iface.name}___CACHE[this.ptr];
+    delete this.ptr;
+   }
 `;
   }
 

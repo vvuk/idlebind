@@ -9,6 +9,8 @@ public:
 class ClassA {
 public:
     ClassA() { printf("ClassA()\n"); }
+    ClassA(int x) { printf("ClassA(%d)\n", x); }
+    ClassA(int x, ClassB *p) { printf("ClassA(%d, %p)\n", x, p); }
     ~ClassA() { printf("~ClassA()\n"); }
 
     static void StaticMethod() {

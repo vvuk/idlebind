@@ -4,7 +4,9 @@ interface ClassB
     void Foo(long num);
 };
 
-[Constructor()]
+[Constructor,
+ Constructor(long x),
+ Constructor(long x, ClassB y)]
 interface ClassA
 {
     static void StaticMethod();
