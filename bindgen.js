@@ -6,21 +6,13 @@ const prettyjson = require('prettyjson');
 const util = require('util');
 const f = util.format;
 
-var outbase = process.argv[3];
-if (!outbase) {
-  throw "need an output base filename";
-}
-
-var infile = fs.readFileSync(process.argv[2], 'utf8');
-var tree = webidl.parse(infile);
-
-var interfaces = {};
-var typedefs = {};
+let interfaces = {};
+let typedefs = {};
 
 function hasExtAttr(attrs, aname, value) {
   if (!attrs)
     return undefined;
-  for (var attr of attrs) {
+  for (let attr of attrs) {
     if (attr.name == aname) {
       if (value !== undefined) {
         if (attr.rhs && attr.rhs.value == value)
@@ -37,7 +29,7 @@ function hasExtAttr(attrs, aname, value) {
 // Type resolution
 //
 
-var resolvedTypes = {};
+let resolvedTypes = {};
 
 function isBasicType(type) {
   if (typeof(type) != 'string')
@@ -90,7 +82,7 @@ function CppBasicType(type) {
 }
 
 function typeKey(idlType, attrs) {
-  var key = "";
+  let key = "";
   if (typeof(idlType) == 'string')
     return idlType;
 
@@ -116,12 +108,12 @@ function typeKey(idlType, attrs) {
 }
 
 function resolveType(idlType, attrs) {
-  var key = typeKey(idlType, attrs);
+  let key = typeKey(idlType, attrs);
   if (key in resolvedTypes) {
     return resolvedTypes[key];
   }
 
-  var baseType = idlType;
+  let baseType = idlType;
   if (typeof(baseType) == "string") {
     if (baseType in typedefs) {
       baseType = resolveType(typedefs[baseType]);
@@ -134,7 +126,7 @@ function resolveType(idlType, attrs) {
     baseType = resolveType(baseType.idlType);
   }
 
-  var itype = baseType;
+  let itype = baseType;
   while (typeof(itype) == 'object') {
     if (itype.sequence || itype.union || itype.nullable) {
       break;
@@ -142,9 +134,9 @@ function resolveType(idlType, attrs) {
     itype = resolveType(itype.idlType);
   }
 
-  var byref = !!hasExtAttr(attrs, "Ref");
-  var byval = !!hasExtAttr(attrs, "Value");
-  var isconst = !!hasExtAttr(attrs, "Const");
+  let byref = !!hasExtAttr(attrs, "Ref");
+  let byval = !!hasExtAttr(attrs, "Value");
+  let isconst = !!hasExtAttr(attrs, "Const");
 
   if (idlType.sequence || idlType.union || idlType.nullable || byref || byval || isconst) {
     // if anything makes it not a simple type, then generate an object here; otherwise
@@ -189,16 +181,16 @@ function isByValInterfaceType(rtype) {
 // helper
 function objDeepCopyNoFalse(o) {
   if (o instanceof Array) {
-    var res = new Array(o.length);
-    for (var i = 0; i < o.length; ++i) {
+    let res = new Array(o.length);
+    for (let i = 0; i < o.length; ++i) {
       res[i] = objDeepCopyNoFalse(o[i]);
     }
     return res;
   }
 
-  var n = {};
-  for (var prop of Object.getOwnPropertyNames(o)) {
-    var val = o[prop];
+  let n = {};
+  for (let prop of Object.getOwnPropertyNames(o)) {
+    let val = o[prop];
     if (val === false || val === null || val === undefined)
       continue;
     if (typeof(val) === 'object') {
@@ -266,7 +258,7 @@ function CppArgs(args) {
 //   if a string, args must be a number, and the result is that string + "#" (except for self, which is 'self')
 //   if a function, it's called with (index, name, args[index])
 function ForNArgs(args, arg1, arg2, arg3) {
-  var withSelf = false, joinstr = ', ', fns;
+  let withSelf = false, joinstr = ', ', fns;
   if (arg2 === undefined) {
     fns = arg1;
   } else if (arg3 === undefined) {
@@ -278,12 +270,12 @@ function ForNArgs(args, arg1, arg2, arg3) {
     fns = arg3;
   }
 
-  var s = [];
-  var offset = 0;
+  let s = [];
+  let offset = 0;
   if (withSelf) {
     offset = 1;
     if (args instanceof Array) {
-      var nargs = [{ name: 'self' }];
+      let nargs = [{ name: 'self' }];
       nargs = nargs.concat(args);
       args = nargs;
     } else {
@@ -292,16 +284,16 @@ function ForNArgs(args, arg1, arg2, arg3) {
   }
 
   if (args instanceof Array) {
-    for (var i = 0; i < args.length; ++i) {
+    for (let i = 0; i < args.length; ++i) {
       s.push(fns.call(null, i, args[i].name ? args[i].name : ('arg'+(i-offset)), args[i]));
     }
   } else if (typeof(fns) == 'string') {
-    for (var i = 0; i < args; ++i) {
+    for (let i = 0; i < args; ++i) {
       if (withSelf && i == 0) s.push('self');
       else s.push(fns + (i-offset));
     }
   } else {
-    for (var i = 0; i < args; ++i) {
+    for (let i = 0; i < args; ++i) {
       if (withSelf && i == 0) s.push(fns.call(null, 0, 'self'));
       s.push(fns.call(null, i, 'arg'+(i-offset)));
     }
@@ -330,7 +322,7 @@ function MakeJSEnsureArg(index, badname, argtype, needEnsure) {
     s = `${name} = ensureString(${name});`;
     needEnsure.value = true;
   } else if (argtype && typeof(argtype.type) === 'object') {
-    var t = argtype.type;
+    let t = argtype.type;
     if (t.sequence) {
       if (!isBasicType(t.idlType)) {
         throw 'JS argument is a sequence but not of a basic type!';
@@ -369,13 +361,15 @@ function MakeJSEnsureArg(index, badname, argtype, needEnsure) {
 
 function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
   overloads.sort((a,b) => a.length > b.length);
-  var maxArgs = 0;
+  let maxArgs = 0;
   for (let o of overloads) maxArgs = Math.max(o.length, maxArgs);
 
   let js = '';
   for (let oi = 0; oi < overloads.length; ++oi) {
     let o = overloads[oi];
     let sep = overloads.length == 1 ? '\n    ' : '\n      ';
+
+    // generate a call to the right overload, based on number of arguments
     let needEnsure = { value: false };
     let inner = ForNArgs(o, sep, (a,b,c) => MakeJSEnsureArg(a,b,c,needEnsure));
     if (needEnsure.value) {
@@ -385,14 +379,15 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
     if (returnType) inner += 'ret = ';
     inner += `_${CppNameFor(iface.name, name, o.length)}(${ForNArgs(o.length, !isStatic, ', ', 'arg')});`;
 
+    // actually select it in the JS, based on the number of arguments passed in (with
+    // later arguments being undefined).  We generate an if/else chain.
     if (o.length != maxArgs) {
       if (oi != 0) js += '    else ';
       js += `if (arg${o.length} === undefined) {\n      ${inner}\n    }\n`;
-    } else {
-      if (oi != 0)
-        js += `    else {\n      ${inner}\n    }`;
-      else
-        js += `${inner}`;
+    } else if (oi != 0) {
+      js += `    else {\n      ${inner}\n    }`;
+     } else {
+      js += `${inner}`;
     }
   }
   return js;
@@ -437,7 +432,7 @@ function handleInterfaceConstructors(iface) {
   js += '  }\n';
 
   // generate the C++
-  var cpp = '';
+  let cpp = '';
   cpp += constructors.overloads.map(function(o) {
     let argdecl = ForNArgs(o, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
     return `
@@ -459,7 +454,7 @@ void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestruct
 }
 
 function handleInterfaceMethods(iface) {
-  var methods = {};
+  let methods = {};
 
   for (let m of iface.members) {
     if (m.type != 'operation')
@@ -491,16 +486,17 @@ function handleInterfaceMethods(iface) {
     }
   }
 
-  var jsmethods = [];
-  var cppmethods = [];
+  let jsmethods = [];
+  let cppmethods = [];
 
-  function doMethod(method) {
+  for (let k of Object.keys(methods)) {
+    let method = methods[k];
     let jsName = method.name;
     let cppName = method.cppName;
     let rtype = method.returnType;
     let isStatic = method.isStatic;
     let overloads = method.overloads;
-    var maxArgs = method.maxArgs;
+    let maxArgs = method.maxArgs;
 
     let js = '';
     js += isStatic ? '  static ' : '  ';
@@ -548,19 +544,25 @@ function handleInterfaceMethods(iface) {
     cppmethods.push(cpp);
   }
 
-  for (var k of Object.keys(methods)) {
-    doMethod(methods[k]);
-  }
-
   return { js: jsmethods.join("\n"), cpp: cppmethods.join("\n") };
 }
 
 function handleInterfaceAttributes(iface) {
-  var attributes = {};
+  let attributes = {};
   for (let m of iface.members) {
     if (m.type != 'attribute')
       continue;
+    let cppName = hasExtAttr(m.extAttrs, "CppName");
+    cppName = cppName ? cppName.rhs.value : m.name;
+
+    m.cppName = cppName;
+    attributes[m.name] = m;
   }
+
+  for (let name of Object.keys(attributes)) {
+  }
+
+  return { js: "", cpp: "" };
 }
 
 function handleInterface(iface) {
@@ -571,7 +573,7 @@ function handleInterface(iface) {
   let attributes = handleInterfaceAttributes(iface);
 
   let js = `
-var ${iface.name}___CACHE = {};
+let ${iface.name}___CACHE = {};
 class ${iface.name} ${superclass ? 'extends ' + superclass : ''}{
 ${constructors.js}
 
@@ -609,10 +611,13 @@ ${methods.js}
 
   js += '}\n';
 
-  return { js: js, cpp: constructors.cpp + '\n' + methods.cpp };
+  // The C++ is simpler
+  let cpp = [constructors.cpp, methods.cpp, attributes.cpp].join("\n");
+
+  return { js: js, cpp: cpp };
 };
 
-var bindings = [];
+let bindings = [];
 
 // preamble, largerly taken from Emscripten's webidl_bind
 const jsPreamble = `
@@ -708,7 +713,16 @@ function ensureF64(value) {
  */
 //console.log(prettyjson.render(tree));
 
-for (var item of tree) {
+let infile = process.argv[2];
+let outbase = process.argv[3];
+if (!outbase) {
+  throw "need an output base filename";
+}
+
+let infilestr = fs.readFileSync(process.argv[2], 'utf8');
+let tree = webidl.parse(infilestr);
+
+for (let item of tree) {
   if (item.type == 'interface') {
     let cppName = hasExtAttr(item.extAttrs, "CppName");
     item.cppName = cppName ? cppName.rhs.value : item.name;
@@ -719,7 +733,7 @@ for (var item of tree) {
   }
 }
 
-var OpaqueWrapperTypeInterface = {
+let OpaqueWrapperTypeInterface = {
   name: 'OpaqueWrapperType',
   members: [],
   extAttrs: [],
