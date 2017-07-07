@@ -372,50 +372,55 @@ function MakeJSEnsureArg(index, badname, argtype, needEnsure) {
 }
 
 function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
-  overloads.sort((a,b) => a.args.length > b.args.length);
+  overloads.sort((a,b) => a.length > b.length);
   var maxArgs = 0;
-  for (let o of overloads) maxArgs = Math.max(o.args.length, maxArgs);
+  for (let o of overloads) maxArgs = Math.max(o.length, maxArgs);
 
   let js = '';
   for (let oi = 0; oi < overloads.length; ++oi) {
     let o = overloads[oi];
     let sep = overloads.length == 1 ? '\n    ' : '\n      ';
     let needEnsure = { value: false };
-    let inner = ForNArgs(o.args, sep, (a,b,c) => MakeJSEnsureArg(a,b,c,needEnsure));
+    let inner = ForNArgs(o, sep, (a,b,c) => MakeJSEnsureArg(a,b,c,needEnsure));
     if (needEnsure.value) {
       inner = 'ensureCache.prepare();' + sep + inner;
     }
     if (inner) inner += sep;
     if (returnType) inner += 'ret = ';
-    inner += `_${CppNameFor(iface.name, name, o.args.length)}(${ForNArgs(o.args.length, !isStatic, ', ', 'arg')});`;
+    inner += `_${CppNameFor(iface.name, name, o.length)}(${ForNArgs(o.length, !isStatic, ', ', 'arg')});`;
 
-    if (o.args.length != maxArgs) {
-      js += '    ';
-      if (oi != 0) js += 'else ';
-      js += `if (arg${o.args.length} === undefined) {\n      ${inner}\n    }\n`;
+    if (o.length != maxArgs) {
+      if (oi != 0) js += '    else ';
+      js += `if (arg${o.length} === undefined) {\n      ${inner}\n    }\n`;
     } else {
       if (oi != 0)
         js += `    else {\n      ${inner}\n    }`;
       else
-        js += `    ${inner}`;
+        js += `${inner}`;
     }
   }
   return js;
 }
 
 function handleInterfaceConstructors(iface) {
-  let constructors = [];
+  let overloads = [];
   let maxArgs = 0;
   for (let attr of iface.extAttrs) {
     if (attr.name != "Constructor")
       continue;
     let args = attr.arguments ? attr.arguments.map(resolveArgument) : [];
     maxArgs = Math.max(args.length, maxArgs);
-    constructors.push({ args: args, returnType: iface.name });
+    overloads.push(args);
   }
 
   // sort by number of args
-  constructors.sort((a,b) => a.args.length > b.args.length);
+  overloads.sort((a,b) => a.length > b.length);
+
+  let constructors = {
+    overloads: overloads,
+    returnType: iface.name,
+    maxArgs: maxArgs
+  };
 
   // generate the JS
   let js = '';
@@ -427,7 +432,7 @@ function handleInterfaceConstructors(iface) {
   } else {
     js += `
     let ret, obj = Object.create(new.target.prototype);
-    ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors)}
+    ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors.overloads)}
     obj.ptr = ret;
     ${iface.name}.__setCache(obj);
     return obj;
@@ -437,11 +442,11 @@ function handleInterfaceConstructors(iface) {
 
   // generate the C++
   var cpp = '';
-  cpp += constructors.map(function(o) {
-    let argdecl = ForNArgs(o.args, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
+  cpp += constructors.overloads.map(function(o) {
+    let argdecl = ForNArgs(o, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
     return `
-${CppConstructorReturnType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.args.length)}(${argdecl}) {
-  return new ${iface.name}(${CppArgs(o.args)});
+${CppConstructorReturnType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
+  return new ${iface.name}(${CppArgs(o)});
 }`;
   }).join('\n');
 
@@ -459,31 +464,35 @@ void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestruct
 
 function handleInterfaceMethods(iface) {
   var methods = {};
-  var staticMethods = {};
 
   for (let m of iface.members) {
     if (m.type != 'operation')
       continue;
 
     let args = m.arguments ? m.arguments.map(resolveArgument) : [];
-    var dest = m.static ? staticMethods : methods;
     let rtype = resolveType(m.idlType, m.extAttrs);
     let jsName = hasExtAttr(m.extAttrs, "JsName");
     jsName = jsName ? jsName.rhs.value : m.name;
     let cppName = hasExtAttr(m.extAttrs, "CppName");
     cppName = cppName ? cppName.rhs.value : m.name;
     if (rtype == 'void') rtype = null;
-    dest[m.name] = dest[m.name] || [];
-    // FIXME -- we should have one object with the common stuff, and then an overloads array
-    dest[m.name].push({
-      args: args,
-      returnType: rtype,
-      jsName: jsName,
-      cppName: cppName,
-      operation: m,
-    });
+    if (!methods[m.name]) {
+      methods[m.name] = {
+        returnType: rtype,
+        jsName: jsName,
+        cppName: cppName,
+        overloads: [],
+        isStatic: m.static,
+        maxArgs: 0,
+      };
+    }
+    methods[m.name].overloads.push(args);
+    methods[m.name].maxArgs = Math.max(methods[m.name].maxArgs, args.length);
 
-    if (!typeEquals(rtype, dest[m.name][0].returnType)) {
+    if (methods[m.name].isStatic != m.static) {
+      throw `Method ${iface.name}.${m.name} has same name as static method, can't handle this`;
+    }
+    if (!typeEquals(rtype, methods[m.name].returnType)) {
       throw `Method ${iface.name}.${m.name} overload differs in return type!`;
     }
   }
@@ -491,20 +500,20 @@ function handleInterfaceMethods(iface) {
   var jsmethods = [];
   var cppmethods = [];
 
-  function doMethod(overloads, isStatic) {
-    let jsName = overloads[0].jsName;
-    let cppName = overloads[0].cppName;
-    let rtype = overloads[0].returnType;
-
-    var maxArgs = 0;
-    for (let o of overloads) maxArgs = Math.max(o.args.length, maxArgs);
+  function doMethod(method) {
+    let jsName = method.jsName;
+    let cppName = method.cppName;
+    let rtype = method.returnType;
+    let isStatic = method.isStatic;
+    let overloads = method.overloads;
+    var maxArgs = method.maxArgs;
 
     let js = '';
     js += isStatic ? '  static ' : '  ';
     js += `${jsName}(${ForNArgs(maxArgs, 'arg')}) {\n`;
     js += isStatic ? '' : '    let self = this.ptr;\n';
     js += rtype ? '    let ret;\n' : '';
-    js += makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
+    js += '    ' + makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
     js += '\n';
     if (rtype) {
       if (isBasicType(rtype)) {
@@ -527,10 +536,10 @@ function handleInterfaceMethods(iface) {
 
     let cpp = '';
     for (let o of overloads) {
-      let argdecl = ForNArgs(o.args, !isStatic, ', ', function(idx, name, arg) { return CppArgType((idx == 0) ? iface.name : arg.type) + ' ' + name; });
-      let call = `${isStatic ? (iface.name+'::') : 'self->'}${cppName}(${CppArgs(o.args)})`;
+      let argdecl = ForNArgs(o, !isStatic, ', ', function(idx, name, arg) { return CppArgType((idx == 0) ? iface.name : arg.type) + ' ' + name; });
+      let call = `${isStatic ? (iface.name+'::') : 'self->'}${cppName}(${CppArgs(o)})`;
 
-      cpp += `${CppReturnType(rtype)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, cppName, o.args.length)}(${argdecl}) {\n`;
+      cpp += `${CppReturnType(rtype)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, cppName, o.length)}(${argdecl}) {\n`;
       if (isByValInterfaceType(rtype)) {
         cpp += `  static ${rtype.idlType} temp;\n`;
         cpp += `  temp = ${call};\n`;
@@ -545,15 +554,19 @@ function handleInterfaceMethods(iface) {
     cppmethods.push(cpp);
   }
 
-  for (var k of Object.keys(staticMethods)) {
-    doMethod(staticMethods[k], true);
-  }
-
   for (var k of Object.keys(methods)) {
-    doMethod(methods[k], false);
+    doMethod(methods[k]);
   }
 
   return { js: jsmethods.join("\n"), cpp: cppmethods.join("\n") };
+}
+
+function handleInterfaceAttributes(iface) {
+  var attributes = {};
+  for (let m of iface.members) {
+    if (m.type != 'attribute')
+      continue;
+  }
 }
 
 function handleInterface(iface) {
@@ -561,6 +574,7 @@ function handleInterface(iface) {
 
   let constructors = handleInterfaceConstructors(iface);
   let methods = handleInterfaceMethods(iface);
+  let attributes = handleInterfaceAttributes(iface);
 
   let js = `
 var ${iface.name}___CACHE = {};
@@ -604,7 +618,6 @@ ${methods.js}
   return { js: js, cpp: constructors.cpp + '\n' + methods.cpp };
 };
 
-//pp(interfaces["Entity"]);
 var bindings = [];
 
 // preamble, largerly taken from Emscripten's webidl_bind
@@ -702,6 +715,8 @@ var OpaqueWrapperTypeInterface = {
   noDestroy: true,
 };
 bindings.push(handleInterface(OpaqueWrapperTypeInterface));
+
+pp(tree);
 
 for (let name of Object.keys(interfaces)) {
   bindings.push(handleInterface(interfaces[name]));

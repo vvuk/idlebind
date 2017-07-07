@@ -1,7 +1,17 @@
+interface ClassC
+{
+};
+
 [Constructor()]
 interface ClassB
 {
     void Foo(long num);
+};
+
+[Constructor()]
+interface ClassBSub : ClassB
+{
+    void Bar(DOMString str);
 };
 
 [Constructor,
@@ -11,5 +21,13 @@ interface ClassA
 {
     static void StaticMethod();
     ClassB MakeAB();
+
+    attribute int foo;
+    readonly attribute int bar;
+
+    static attribute int staticFoo;
+
+    [Value] ClassC GetC();
+    void SetC([Ref] ClassC v);
 };
 
