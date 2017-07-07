@@ -186,16 +186,6 @@ function isByValInterfaceType(rtype) {
   return (typeof(rtype) == 'object') && (rtype.byval || rtype.byref) && (rtype.idlType in interfaces);
 }
 
-//console.log(prettyjson.render(tree));
-
-for (var item of tree) {
-  if (item.type == 'interface') {
-    interfaces[item.name] = item;
-  } else if (item.type == 'typedef') {
-    typedefs[item.name] = item.idlType;
-  }
-}
-
 // helper
 function objDeepCopyNoFalse(o) {
   if (o instanceof Array) {
@@ -227,32 +217,38 @@ const BASE_MODULE = 'Module';
 const PFX = 'jsbind_';
 const DESTRUCTOR = '__destroy__';
 
-var jsCode = [];
-
 function CppNameFor(ifacename, funcname, nargs) {
   if (!funcname) funcname = ifacename;
   return PFX + ifacename + "_" + funcname + "_" + nargs;
 }
 
-function CppConstructorReturnType(typename) {
-  return `${typename}*`;
+function CppConstructorReturnType(type) {
+  if (type in interfaces) {
+    return interfaces[type].cppName + '*';
+  }
+  throw `Unknown Cpp constructor return type for '${type}'`;
 }
 
-function CppDestructorArgType(typename) {
-  return `${typename}*`;
+function CppDestructorArgType(type) {
+  if (type in interfaces) {
+    return interfaces[type].cppName + '*';
+  }
+  throw `Unknown Cpp destructor type for '${type}'`;
 }
 
 function CppArgType(type) {
   let t = CppBasicType(type);
   if (t)
     return t;
-  if (typeof(type) === 'string')
-    return type + '*';
+  if (typeof(type) === 'string' && type in interfaces) {
+    return interfaces[type].cppName + '*';
+  }
   if (!type || type == 'void')
     return 'void';
-  if (isByValInterfaceType(type))
-    return `${type.idlType}*`;
-  return "SOMETHING";
+  if (isByValInterfaceType(type)) {
+    return CppArgType(type.idlType);
+  }
+  throw `Unknown Cpp arg type for '${type}'`;
 }
 
 function CppReturnType(type) {
@@ -446,7 +442,7 @@ function handleInterfaceConstructors(iface) {
     let argdecl = ForNArgs(o, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
     return `
 ${CppConstructorReturnType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
-  return new ${iface.name}(${CppArgs(o)});
+  return new ${iface.cppName}(${CppArgs(o)});
 }`;
   }).join('\n');
 
@@ -471,15 +467,13 @@ function handleInterfaceMethods(iface) {
 
     let args = m.arguments ? m.arguments.map(resolveArgument) : [];
     let rtype = resolveType(m.idlType, m.extAttrs);
-    let jsName = hasExtAttr(m.extAttrs, "JsName");
-    jsName = jsName ? jsName.rhs.value : m.name;
     let cppName = hasExtAttr(m.extAttrs, "CppName");
     cppName = cppName ? cppName.rhs.value : m.name;
     if (rtype == 'void') rtype = null;
     if (!methods[m.name]) {
       methods[m.name] = {
+        name: m.name,
         returnType: rtype,
-        jsName: jsName,
         cppName: cppName,
         overloads: [],
         isStatic: m.static,
@@ -501,7 +495,7 @@ function handleInterfaceMethods(iface) {
   var cppmethods = [];
 
   function doMethod(method) {
-    let jsName = method.jsName;
+    let jsName = method.name;
     let cppName = method.cppName;
     let rtype = method.returnType;
     let isStatic = method.isStatic;
@@ -570,7 +564,7 @@ function handleInterfaceAttributes(iface) {
 }
 
 function handleInterface(iface) {
-  let superclass = null;
+  let superclass = iface['inheritance'];
 
   let constructors = handleInterfaceConstructors(iface);
   let methods = handleInterfaceMethods(iface);
@@ -708,6 +702,23 @@ function ensureF64(value) {
 }
 `;
 
+/* ======
+ * (main)
+ * ======
+ */
+//console.log(prettyjson.render(tree));
+
+for (var item of tree) {
+  if (item.type == 'interface') {
+    let cppName = hasExtAttr(item.extAttrs, "CppName");
+    item.cppName = cppName ? cppName.rhs.value : item.name;
+
+    interfaces[item.name] = item;
+  } else if (item.type == 'typedef') {
+    typedefs[item.name] = item.idlType;
+  }
+}
+
 var OpaqueWrapperTypeInterface = {
   name: 'OpaqueWrapperType',
   members: [],
@@ -716,13 +727,14 @@ var OpaqueWrapperTypeInterface = {
 };
 bindings.push(handleInterface(OpaqueWrapperTypeInterface));
 
-pp(tree);
+//pp(tree);
 
 for (let name of Object.keys(interfaces)) {
   bindings.push(handleInterface(interfaces[name]));
 }
 
 let jsfd = fs.openSync(outbase + '.js', 'w');
+fs.writeSync(jsfd, jsPreamble);
 for (let b of bindings) {
   fs.writeSync(jsfd, b.js);
 }

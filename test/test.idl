@@ -1,5 +1,7 @@
+
 interface ClassC
 {
+    attribute long v;
 };
 
 [Constructor()]
@@ -8,8 +10,9 @@ interface ClassB
     void Foo(long num);
 };
 
-[Constructor()]
-interface ClassBSub : ClassB
+[Constructor(),
+ CppName=ClassBSub]
+interface ClassBSubJS : ClassB
 {
     void Bar(DOMString str);
 };

@@ -3,3 +3,5 @@
    on the JS side to know how to adjust an A pointer to become a B
 -- use a Proxy and override 'as', so that on the JS side you can just write 'var a = something.GetA();  var b = a as B;' and have it work
 
+- generate JS renames for interface typedefs (e.g. on idl side "typedef Foo Bar;" should result in a "var Bar = Foo;" after class Foo is defined.
+
