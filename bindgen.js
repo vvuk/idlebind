@@ -214,6 +214,10 @@ function CppNameFor(ifacename, funcname, nargs) {
   return PFX + ifacename + "_" + funcname + "_" + nargs;
 }
 
+function CppPropNameFor(ifacename, propname, issetter) {
+  return PFX + ifacename + (issetter ? "___SET___" : "___GET___") + propname;
+}
+
 function CppConstructorReturnType(type) {
   if (type in interfaces) {
     return interfaces[type].cppName + '*';
@@ -252,30 +256,30 @@ function CppArgs(args) {
 }
 
 // args can be either a number or an argument array
-// withSelf - if true, a self argument is prepended [can be omitted]
-// joinstr - a string to Array.join the result with [can be omitted, but not if withSelf is specified]
+// classType - if non-null, a 'self' argument of this type is prepended to the arg list
+// joinstr - a string to Array.join the result with [can be omitted, but not if classType is specified]
 // fns - either a function or a string
 //   if a string, args must be a number, and the result is that string + "#" (except for self, which is 'self')
 //   if a function, it's called with (index, name, args[index])
 function ForNArgs(args, arg1, arg2, arg3) {
-  let withSelf = false, joinstr = ', ', fns;
+  let classType = undefined, joinstr = ', ', fns;
   if (arg2 === undefined) {
     fns = arg1;
   } else if (arg3 === undefined) {
     joinstr = arg1;
     fns = arg2;
   } else {
-    withSelf = arg1;
+    classType = arg1;
     joinstr = arg2;
     fns = arg3;
   }
 
   let s = [];
   let offset = 0;
-  if (withSelf) {
+  if (classType) {
     offset = 1;
     if (args instanceof Array) {
-      let nargs = [{ name: 'self' }];
+      let nargs = [{ name: 'self', type: classType }];
       nargs = nargs.concat(args);
       args = nargs;
     } else {
@@ -289,12 +293,12 @@ function ForNArgs(args, arg1, arg2, arg3) {
     }
   } else if (typeof(fns) == 'string') {
     for (let i = 0; i < args; ++i) {
-      if (withSelf && i == 0) s.push('self');
+      if (classType && i == 0) s.push('self');
       else s.push(fns + (i-offset));
     }
   } else {
     for (let i = 0; i < args; ++i) {
-      if (withSelf && i == 0) s.push(fns.call(null, 0, 'self'));
+      if (classType && i == 0) s.push(fns.call(null, 0, 'self'));
       s.push(fns.call(null, i, 'arg'+(i-offset)));
     }
   }
@@ -312,47 +316,42 @@ function resolveArgument(arg) {
 // generate a statement either pulling out the inner ptr
 // from an argument, or moving it into temporary memory
 // (for e.g. strings/arrays) if needed.
-function MakeJSEnsureArg(index, badname, argtype, needEnsure) {
+function MakeJSEnsureArg(index, argtype, needEnsure) {
   let name = "arg" + index;
-  if (argtype && isBasicType(argtype.type)) {
+  if (isBasicType(argtype))
     return;
-  }
   let s;
-  if (argtype.type == 'DOMString') {
+  if (argtype == 'DOMString') {
     s = `${name} = ensureString(${name});`;
     needEnsure.value = true;
-  } else if (argtype && typeof(argtype.type) === 'object') {
-    let t = argtype.type;
-    if (t.sequence) {
-      if (!isBasicType(t.idlType)) {
-        throw 'JS argument is a sequence but not of a basic type!';
-      }
-
-      switch (t.idlType) {
-        case 'boolean':
-        case 'byte':
-        case 'octet':
-          s = `${name} = ensureI8(${name});`;
-          break;
-        case 'short':
-        case 'unsigned short':
-          s = `${name} = ensureI16(${name});`;
-          break;
-        case 'long':
-        case 'unsigned long':
-          s = `${name} = ensureI32(${name});`;
-          break;
-        case 'float':
-          s = `${name} = ensureF32(${name});`;
-          break;
-        case 'double':
-          s = `${name} = ensureF64(${name});`;
-          break;
-        default:
-          throw `Not sure how to alloc temp sequences of type ${t.idlType}`;
-      }
-      needEnsure.value = true;
+  } else if (typeof(argtype) === 'object' && argtype.sequence) {
+    if (!isBasicType(argtype.idlType)) {
+      throw 'JS argument is a sequence but not of a basic type!';
     }
+    switch (argtype.idlType) {
+      case 'boolean':
+      case 'byte':
+      case 'octet':
+        s = `${name} = ensureI8(${name});`;
+        break;
+      case 'short':
+      case 'unsigned short':
+        s = `${name} = ensureI16(${name});`;
+        break;
+      case 'long':
+      case 'unsigned long':
+        s = `${name} = ensureI32(${name});`;
+        break;
+      case 'float':
+        s = `${name} = ensureF32(${name});`;
+        break;
+      case 'double':
+        s = `${name} = ensureF64(${name});`;
+        break;
+      default:
+        throw `Not sure how to alloc temp sequences of type ${t.idlType}`;
+    }
+    needEnsure.value = true;
   } else {
      s = `${name} = ${name}.ptr;`;
   }
@@ -371,13 +370,13 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
 
     // generate a call to the right overload, based on number of arguments
     let needEnsure = { value: false };
-    let inner = ForNArgs(o, sep, (a,b,c) => MakeJSEnsureArg(a,b,c,needEnsure));
+    let inner = ForNArgs(o, sep, (idx,b,argtype) => MakeJSEnsureArg(idx,argtype.type,needEnsure));
     if (needEnsure.value) {
       inner = 'ensureCache.prepare();' + sep + inner;
     }
     if (inner) inner += sep;
     if (returnType) inner += 'ret = ';
-    inner += `_${CppNameFor(iface.name, name, o.length)}(${ForNArgs(o.length, !isStatic, ', ', 'arg')});`;
+    inner += `_${CppNameFor(iface.name, name, o.length)}(${ForNArgs(o.length, isStatic ? false : iface.name, ', ', 'arg')});`;
 
     // actually select it in the JS, based on the number of arguments passed in (with
     // later arguments being undefined).  We generate an if/else chain.
@@ -415,11 +414,11 @@ function handleInterfaceConstructors(iface) {
 
   // generate the JS
   let js = '';
-  js += `  constructor(${ForNArgs(maxArgs, 'arg')}) {\n`;
+  js += `  constructor(${ForNArgs(maxArgs, 'arg')}) {`;
   // we should check and see if an arg in this position could
   // possibly be an object, and only do this if so
-  if (constructors.length == 0) {
-    js += `    throw "No constructor defined for ${iface.name}";\n`
+  if (constructors.overloads.length == 0) {
+    js += `\n    throw "No constructor defined for ${iface.name}";\n`
   } else {
     js += `
     let ret, obj = Object.create(new.target.prototype);
@@ -451,6 +450,20 @@ void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestruct
   }
 
   return { js: js, cpp: cpp };
+}
+
+function makeJSReturnFor(rtype, ret) {
+  if (isBasicType(rtype))
+    return `return ${ret};`;
+  if (rtype === 'DOMString')
+    return `return Pointer_stringify(${ret});`;
+  if (rtype in interfaces)
+    return `return ${rtype}.__wrap(${ret});`;
+  if (isByValInterfaceType(rtype))
+    return `return ${rtype.idlType}.__wrapNoCache(${ret});`;
+  //if (typeof(rtype) == 'string')
+  //    return `return OpaqueWrapperType.__wrap(${ret});`;
+  throw `Don't know how to handle return types of ${prettyjson.render(rtype)}`;
 }
 
 function handleInterfaceMethods(iface) {
@@ -506,27 +519,13 @@ function handleInterfaceMethods(iface) {
     js += '    ' + makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
     js += '\n';
     if (rtype) {
-      if (isBasicType(rtype)) {
-        js += '    return ret;\n';
-      } else {
-        if (rtype === 'DOMString') {
-          js += '    return Pointer_stringify(ret);\n';
-        } else if (rtype in interfaces) {
-          js += `    return ${rtype}.__wrap(ret);\n`;
-        } else if (typeof(rtype) == 'string') {
-          js += `    return OpaqueWrapperType.__wrap(ret);\n`;
-        } else if (isByValInterfaceType(rtype)) {
-          js += `    return ${rtype.idlType}.__wrapNoCache(ret);\n`;
-        } else {
-          throw `Don't know how to handle return types of ${prettyjson.render(rtype)}`;
-        }
-      }
+      js += '    ' + makeJSReturnFor(rtype, 'ret') + '\n';
     }
     js += '  }\n';
 
     let cpp = '';
     for (let o of overloads) {
-      let argdecl = ForNArgs(o, !isStatic, ', ', function(idx, name, arg) { return CppArgType((idx == 0) ? iface.name : arg.type) + ' ' + name; });
+      let argdecl = ForNArgs(o, isStatic ? false : iface.name, ', ', (idx, name, arg) => CppArgType(arg.type) + ' ' + name);
       let call = `${isStatic ? (iface.name+'::') : 'self->'}${cppName}(${CppArgs(o)})`;
 
       cpp += `${CppReturnType(rtype)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, cppName, o.length)}(${argdecl}) {\n`;
@@ -556,13 +555,61 @@ function handleInterfaceAttributes(iface) {
     cppName = cppName ? cppName.rhs.value : m.name;
 
     m.cppName = cppName;
+    m.idlType = resolveType(m.idlType);
     attributes[m.name] = m;
   }
 
-  for (let name of Object.keys(attributes)) {
+  let jsattrs = [];
+  let cppattrs = [];
+
+  for (let k of Object.keys(attributes)) {
+    let attr = attributes[k];
+
+    let js = `
+  get ${attr.name}() {
+    let ret = _${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : 'this.ptr'});
+    ${makeJSReturnFor(attr.idlType, 'ret')}
+  }`;
+
+    let cpp = `${CppReturnType(attr.idlType)} EMSCRIPTEN_KEEPALIVE `
+    cpp += `${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : (CppArgType(iface.name) + ' self')}) {\n`;
+    let call = attr.static ? `${iface.name}::${attr.cppName}` : `self->${attr.cppName}`;
+    if (isByValInterfaceType(attr.idlType)) {
+      cpp += `  static ${attr.idlType} temp;\n`;
+      cpp += `  temp = ${call};\n`;
+      cpp += `  return &temp;\n`;
+    } else {
+      cpp += `  return ${call};\n`;
+    }
+    cpp += '}';
+
+    if (!attr.isReadOnly) {
+      let needEnsure = { value: false };
+      let ensure = MakeJSEnsureArg(0, attr.idlType, needEnsure);
+      if (needEnsure.value)
+        ensure = 'ensureCache.prepare();    ' + ensure;
+
+      js += `\n  set ${attr.name}(arg0) {\n`;
+      if (ensure) js += '    ' + ensure + '\n';
+      js += `    _${CppPropNameFor(iface.name, attr.name, true)}(${attr.static ? '' : 'this.ptr, '}arg0);\n`;
+      js += '  }';
+
+      cpp += '\nvoid EMSCRIPTEN_KEEPALIVE ';
+      cpp += `${CppPropNameFor(iface.name, attr.name, true)}(`;
+      if (!attr.static) {
+        cpp += `${CppArgType(iface.name)} self, `;
+      }
+      cpp += `${CppArgType(attr.idlType)} arg0) {\n`;
+      cpp += `  ${attr.static ? `${iface.name}::` : `self->`}${attr.cppName} = `;
+      cpp += isByValInterfaceType(attr.idlType) ? '*arg0;\n' : 'arg0;\n';
+      cpp += '}';
+    }
+
+    jsattrs.push(js);
+    cppattrs.push(cpp);
   }
 
-  return { js: "", cpp: "" };
+  return { js: jsattrs.join("\n"), cpp: cppattrs.join("\n") };
 }
 
 function handleInterface(iface) {
@@ -576,9 +623,8 @@ function handleInterface(iface) {
 let ${iface.name}___CACHE = {};
 class ${iface.name} ${superclass ? 'extends ' + superclass : ''}{
 ${constructors.js}
-
 ${methods.js}
-
+${attributes.js}
   static __setCache(obj) {
     ${iface.name}___CACHE[obj.ptr] = obj;
   }

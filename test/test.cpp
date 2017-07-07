@@ -36,6 +36,11 @@ public:
     void SetC(ClassC& c) { cc = c; };
 
     ClassC cc;
+    int foo;
+    int bar;
+    static int staticFoo;
 };
+
+int ClassA::staticFoo = 123;
 
 #include "gen-bindings.cpp"

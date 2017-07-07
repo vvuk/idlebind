@@ -25,10 +25,10 @@ interface ClassA
     static void StaticMethod();
     ClassB MakeAB();
 
-    attribute int foo;
-    readonly attribute int bar;
+    attribute long foo;
+    readonly attribute long bar;
 
-    static attribute int staticFoo;
+    static attribute long staticFoo;
 
     [Value] ClassC GetC();
     void SetC([Ref] ClassC v);

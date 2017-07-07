@@ -6,6 +6,7 @@ b.Foo(42);
 var cc = a.GetC();
 cc.v = 0;
 console.log(a.GetC().v);
+cc.v = 123;
 a.SetC(cc);
 console.log(a.GetC().v);
 
