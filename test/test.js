@@ -16,11 +16,15 @@ q.Bar("Hello");
 
 
 var sh = new SharedClass();
-console.log(sh, sh.ptr, sh.sharedPtr);
+console.log(sh);
 sh.destroy();
 
 sh = new SharedClass();
 a.DoShared(sh);
+sh.destroy();
+
+sh = a.MakeShared();
+sh.Thing();
 sh.destroy();
 
 a.destroy();

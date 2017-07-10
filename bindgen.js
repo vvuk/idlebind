@@ -208,7 +208,6 @@ function pp(o) {
 const BASE_MODULE = 'Module';
 const PFX = 'jsbind_';
 const DESTRUCTOR = '__DESTROY__';
-const WRAP_SHARED_PTR = '__WRAP_SHARED_PTR__';
 
 function CppNameFor(ifacename, funcname, nargs) {
   if (!funcname) funcname = ifacename;
@@ -219,7 +218,7 @@ function CppPropNameFor(ifacename, propname, issetter) {
   return PFX + ifacename + (issetter ? "___SET___" : "___GET___") + propname;
 }
 
-function CppDestructorType(type) {
+function CppConstructorDestructorType(type) {
   let iface = interfaces[type];
   if (!iface)
     throw `Unknown Cpp constructor/destructor type for '${type}'`;
@@ -228,14 +227,14 @@ function CppDestructorType(type) {
   return iface.cppName + '*';
 }
 
-function CppSelfArgType(type, nonconst) {
+function CppSelfArgType(type) {
   let iface = interfaces[type];
   if (!iface)
     throw `Unknown Cpp self type for '${type}'`;
   // note const ref here; we can still pass in the address from JS side,
   // but C++ side can still use it like "self->foo()"
-//  if (iface.sharedPtr)
-//    return `const std::shared_ptr<${iface.cppName}>&`;
+  if (iface.sharedPtr)
+    return `const std::shared_ptr<${iface.cppName}>&`;
   return iface.cppName + '*';
 }
 
@@ -244,7 +243,7 @@ function CppArgType(type) {
   if (t)
     return t;
   if (typeof(type) === 'string' && type in interfaces) {
-    return interfaces[type].cppName + '*';
+    return CppSelfArgType(type);
   }
   if (!type || type == 'void')
     return 'void';
@@ -255,6 +254,9 @@ function CppArgType(type) {
 }
 
 function CppReturnType(type) {
+  if (type in interfaces && interfaces[type].sharedPtr) {
+    return `std::shared_ptr<${type}>*`;
+  }
   return CppArgType(type);
 }
 
@@ -431,10 +433,7 @@ function handleInterfaceConstructors(iface) {
     let ret, obj = Object.create(new.target.prototype);
     ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors.overloads)}
     obj.ptr = ret;
-`;
-    if (iface.sharedPtr)
-      js += `    obj.sharedPtr = _${CppNameFor(iface.name, WRAP_SHARED_PTR, 0)}(ret);\n`;
-    js += `    ${iface.name}.__setCache(obj);
+    ${iface.name}.__setCache(obj);
     return obj;
 `;
   }
@@ -444,28 +443,26 @@ function handleInterfaceConstructors(iface) {
   let cpp = '';
   cpp += constructors.overloads.map(function(o) {
     let argdecl = ForNArgs(o, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
-    return `${CppSelfArgType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
-  return new ${iface.cppName}(${CppArgs(o)});
+    let construct;
+    if (iface.sharedPtr) {
+      // we have to heap-construct a shared ptr
+      construct = `new std::shared_ptr<${iface.cppName}>(std::make_shared<${iface.cppName}>(${CppArgs(o)}))`;
+    } else {
+      construct = `new ${iface.cppName}(${CppArgs(o)})`;
+    }
+    return `${CppConstructorDestructorType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
+  return ${construct};
 }`;
   }).join('\n');
 
   // destroy helper
   if (!iface.noDestroy) {
     cpp += '\n';
-    cpp += `void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestructorType(iface.name)} self) {\n`
+    cpp += `void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppConstructorDestructorType(iface.name)} self) {\n`
     if (iface.sharedPtr)
       cpp += '  self->reset();\n';
     cpp += '  delete self;\n';
     cpp += '}';
-  }
-
-  // Shared ptr helper, if needed.  The 'first' argument is used by constructors to signal that this is the
-  // first shared ptr created from this.
-  if (iface.sharedPtr) {
-    cpp += `
-${CppDestructorType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, WRAP_SHARED_PTR, 0)}(${CppArgType(iface.name)} other) {
-  return new std::shared_ptr<${iface.cppName}>(other);
-}`;
   }
 
   return { js: js, cpp: cpp };
@@ -557,6 +554,11 @@ function handleInterfaceMethods(iface) {
         cpp += `  static ${rtype.idlType} temp;\n`;
         cpp += `  temp = ${call};\n`;
         cpp += `  return &temp;\n`;
+      } else if (rtype in interfaces && interfaces[rtype].sharedPtr) {
+        // TODO ${call} must return a std::shared_ptr<$rtype> -- can't be a bare
+        // pointer. Would be nice to enforce this somehow, because this will silently
+        // compile if $call returns a $rtype*
+        cpp += `  return new std::shared_ptr<${rtype}>(${call});\n`;
       } else {
         cpp += `  ${!!rtype ? 'return ' : ''}${call};\n`;
       }
@@ -672,7 +674,7 @@ ${attributes.js}
   if (!iface.noDestroy) {
     js += `
   destroy() {
-    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(${iface.sharedPtr ? 'this.sharedPtr' : 'this.ptr'});
+    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
     delete ${iface.name}___CACHE[this.ptr];
     delete this.ptr;
    }

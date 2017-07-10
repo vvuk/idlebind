@@ -43,6 +43,7 @@ public:
     ClassC GetC() { return cc; }
     void SetC(ClassC& c) { cc = c; };
 
+    std::shared_ptr<SharedClass> MakeShared() { return std::make_shared<SharedClass>(); }
     void DoShared(std::shared_ptr<SharedClass> sc) { sc->Thing(); }
 
     ClassC cc;

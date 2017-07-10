@@ -40,6 +40,7 @@ interface ClassA
     [Value] ClassC GetC();
     void SetC([Ref] ClassC v);
 
+    SharedClass MakeShared();
     void DoShared(SharedClass sc);
 };
 

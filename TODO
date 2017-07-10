@@ -5,3 +5,15 @@
 
 - generate JS renames for interface typedefs (e.g. on idl side "typedef Foo Bar;" should result in a "var Bar = Foo;" after class Foo is defined.
 
+smart_ptr strategy:
+
+[SmartPtr]
+Foo { }
+
+Foo as non-destructor arg is always 'const smart_ptr<Foo>&'
+Foo as return or destructor arg is always 'smart_ptr<Foo>*'
+
+TODO:
+  For functions returning Foo(), we need to add some code to make sure
+  that the implementation actually returns smart_ptr<Foo> or unique_ptr<Foo>;
+  a bare pointer would silently compile
