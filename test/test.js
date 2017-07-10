@@ -14,6 +14,14 @@ var q = new ClassBSubJS();
 q.Foo(24);
 q.Bar("Hello");
 
+
+var sh = new SharedClass();
+console.log(sh, sh.ptr, sh.sharedPtr);
+sh.destroy();
+
+sh = new SharedClass();
+a.DoShared(sh);
+sh.destroy();
+
 a.destroy();
 q.destroy();
-

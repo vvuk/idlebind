@@ -1,3 +1,4 @@
+#include <memory>
 #include <emscripten.h>
 
 class ClassB {
@@ -17,6 +18,13 @@ struct ClassC {
     int v;
 };
 
+class SharedClass : public std::enable_shared_from_this<SharedClass> {
+public:
+    SharedClass() { printf ("SharedClass()\n"); }
+    ~SharedClass() { printf("~SharedClass()\n"); }
+    void Thing() { printf("SharedClass::Thing()\n"); }
+};
+
 class ClassA {
 public:
     ClassA() { printf("ClassA()\n"); }
@@ -34,6 +42,8 @@ public:
 
     ClassC GetC() { return cc; }
     void SetC(ClassC& c) { cc = c; };
+
+    void DoShared(std::shared_ptr<SharedClass> sc) { sc->Thing(); }
 
     ClassC cc;
     int foo;

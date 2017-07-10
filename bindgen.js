@@ -207,7 +207,8 @@ function pp(o) {
 
 const BASE_MODULE = 'Module';
 const PFX = 'jsbind_';
-const DESTRUCTOR = '__destroy__';
+const DESTRUCTOR = '__DESTROY__';
+const WRAP_SHARED_PTR = '__WRAP_SHARED_PTR__';
 
 function CppNameFor(ifacename, funcname, nargs) {
   if (!funcname) funcname = ifacename;
@@ -218,18 +219,24 @@ function CppPropNameFor(ifacename, propname, issetter) {
   return PFX + ifacename + (issetter ? "___SET___" : "___GET___") + propname;
 }
 
-function CppConstructorReturnType(type) {
-  if (type in interfaces) {
-    return interfaces[type].cppName + '*';
-  }
-  throw `Unknown Cpp constructor return type for '${type}'`;
+function CppDestructorType(type) {
+  let iface = interfaces[type];
+  if (!iface)
+    throw `Unknown Cpp constructor/destructor type for '${type}'`;
+  if (iface.sharedPtr)
+    return `std::shared_ptr<${iface.cppName}>*`;
+  return iface.cppName + '*';
 }
 
-function CppDestructorArgType(type) {
-  if (type in interfaces) {
-    return interfaces[type].cppName + '*';
-  }
-  throw `Unknown Cpp destructor type for '${type}'`;
+function CppSelfArgType(type, nonconst) {
+  let iface = interfaces[type];
+  if (!iface)
+    throw `Unknown Cpp self type for '${type}'`;
+  // note const ref here; we can still pass in the address from JS side,
+  // but C++ side can still use it like "self->foo()"
+//  if (iface.sharedPtr)
+//    return `const std::shared_ptr<${iface.cppName}>&`;
+  return iface.cppName + '*';
 }
 
 function CppArgType(type) {
@@ -424,7 +431,10 @@ function handleInterfaceConstructors(iface) {
     let ret, obj = Object.create(new.target.prototype);
     ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors.overloads)}
     obj.ptr = ret;
-    ${iface.name}.__setCache(obj);
+`;
+    if (iface.sharedPtr)
+      js += `    obj.sharedPtr = _${CppNameFor(iface.name, WRAP_SHARED_PTR, 0)}(ret);\n`;
+    js += `    ${iface.name}.__setCache(obj);
     return obj;
 `;
   }
@@ -434,8 +444,7 @@ function handleInterfaceConstructors(iface) {
   let cpp = '';
   cpp += constructors.overloads.map(function(o) {
     let argdecl = ForNArgs(o, function(idx, name, arg) { return CppArgType(arg.type) + ' ' + name; });
-    return `
-${CppConstructorReturnType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
+    return `${CppSelfArgType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, null, o.length)}(${argdecl}) {
   return new ${iface.cppName}(${CppArgs(o)});
 }`;
   }).join('\n');
@@ -443,9 +452,19 @@ ${CppConstructorReturnType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.
   // destroy helper
   if (!iface.noDestroy) {
     cpp += '\n';
+    cpp += `void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestructorType(iface.name)} self) {\n`
+    if (iface.sharedPtr)
+      cpp += '  self->reset();\n';
+    cpp += '  delete self;\n';
+    cpp += '}';
+  }
+
+  // Shared ptr helper, if needed.  The 'first' argument is used by constructors to signal that this is the
+  // first shared ptr created from this.
+  if (iface.sharedPtr) {
     cpp += `
-void EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, DESTRUCTOR, 0)}(${CppDestructorArgType(iface.name)} self) {
-  delete self;
+${CppDestructorType(iface.name)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, WRAP_SHARED_PTR, 0)}(${CppArgType(iface.name)} other) {
+  return new std::shared_ptr<${iface.cppName}>(other);
 }`;
   }
 
@@ -525,7 +544,12 @@ function handleInterfaceMethods(iface) {
 
     let cpp = '';
     for (let o of overloads) {
-      let argdecl = ForNArgs(o, isStatic ? false : iface.name, ', ', (idx, name, arg) => CppArgType(arg.type) + ' ' + name);
+      let argdecl;
+      if (isStatic) {
+        argdecl = ForNArgs(o, ', ', (idx, name, arg) => CppArgType(arg.type) + ' ' + name);
+      } else {
+        argdecl = ForNArgs(o, iface.name, ', ', (idx, name, arg) => (idx==0 ? CppSelfArgType(arg.type) : CppArgType(arg.type)) + ' ' + name);
+      }
       let call = `${isStatic ? (iface.name+'::') : 'self->'}${cppName}(${CppArgs(o)})`;
 
       cpp += `${CppReturnType(rtype)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, cppName, o.length)}(${argdecl}) {\n`;
@@ -572,7 +596,7 @@ function handleInterfaceAttributes(iface) {
   }`;
 
     let cpp = `${CppReturnType(attr.idlType)} EMSCRIPTEN_KEEPALIVE `
-    cpp += `${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : (CppArgType(iface.name) + ' self')}) {\n`;
+    cpp += `${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : (CppSelfArgType(iface.name) + ' self')}) {\n`;
     let call = attr.static ? `${iface.name}::${attr.cppName}` : `self->${attr.cppName}`;
     if (isByValInterfaceType(attr.idlType)) {
       cpp += `  static ${attr.idlType} temp;\n`;
@@ -597,7 +621,7 @@ function handleInterfaceAttributes(iface) {
       cpp += '\nvoid EMSCRIPTEN_KEEPALIVE ';
       cpp += `${CppPropNameFor(iface.name, attr.name, true)}(`;
       if (!attr.static) {
-        cpp += `${CppArgType(iface.name)} self, `;
+        cpp += `${CppSelfArgType(iface.name)} self, `;
       }
       cpp += `${CppArgType(attr.idlType)} arg0) {\n`;
       cpp += `  ${attr.static ? `${iface.name}::` : `self->`}${attr.cppName} = `;
@@ -648,7 +672,7 @@ ${attributes.js}
   if (!iface.noDestroy) {
     js += `
   destroy() {
-    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
+    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(${iface.sharedPtr ? 'this.sharedPtr' : 'this.ptr'});
     delete ${iface.name}___CACHE[this.ptr];
     delete this.ptr;
    }
@@ -773,10 +797,22 @@ for (let item of tree) {
     let cppName = hasExtAttr(item.extAttrs, "CppName");
     item.cppName = cppName ? cppName.rhs.value : item.name;
 
+    let sharedPtr = !!hasExtAttr(item.extAttrs, "SharedPtr");
+    item.sharedPtr = sharedPtr;
+
     interfaces[item.name] = item;
   } else if (item.type == 'typedef') {
     typedefs[item.name] = item.idlType;
   }
+}
+
+// check some things
+for (let k of Object.keys(interfaces)) {
+  let parent = interfaces[k].inheritance;
+  if (!parent)
+    continue;
+  if (interfaces[parent].sharedPtr != interfaces[k].sharedPtr)
+    throw `interfaces ${parent} and ${k} must both be sharedPtr if one is`;
 }
 
 let OpaqueWrapperTypeInterface = {
@@ -785,7 +821,7 @@ let OpaqueWrapperTypeInterface = {
   extAttrs: [],
   noDestroy: true,
 };
-bindings.push(handleInterface(OpaqueWrapperTypeInterface));
+interfaces[OpaqueWrapperTypeInterface.name] = OpaqueWrapperTypeInterface;
 
 //pp(tree);
 
@@ -807,6 +843,7 @@ fs.writeSync(cppfd, "#include <emscripten.h>\n\n");
 fs.writeSync(cppfd, 'extern "C" {\n\n');
 for (let b of bindings) {
   fs.writeSync(cppfd, b.cpp);
+  fs.writeSync(cppfd, '\n\n');
 }
 fs.writeSync(cppfd, '\n}\n');
 fs.closeSync(cppfd);

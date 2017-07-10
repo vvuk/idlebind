@@ -17,6 +17,13 @@ interface ClassBSubJS : ClassB
     void Bar(DOMString str);
 };
 
+[SharedPtr,
+ Constructor()]
+interface SharedClass
+{
+    void Thing();
+};
+
 [Constructor,
  Constructor(long x),
  Constructor(long x, ClassB y)]
@@ -32,5 +39,7 @@ interface ClassA
 
     [Value] ClassC GetC();
     void SetC([Ref] ClassC v);
+
+    void DoShared(SharedClass sc);
 };
 
