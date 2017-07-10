@@ -27,5 +27,10 @@ sh = a.MakeShared();
 sh.Thing();
 sh.destroy();
 
+for (var i = 0; i < 5; ++i) {
+    var num = a.AddOne(function(v) { return v *v; }, 2);
+    console.log("num: ", num);
+}
+
 a.destroy();
 q.destroy();

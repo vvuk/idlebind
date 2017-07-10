@@ -5,15 +5,89 @@
 
 - generate JS renames for interface typedefs (e.g. on idl side "typedef Foo Bar;" should result in a "var Bar = Foo;" after class Foo is defined.
 
-smart_ptr strategy:
 
-[SmartPtr]
+## shared_ptr
+
+[SharedPtr]
 Foo { }
 
-Foo as non-destructor arg is always 'const smart_ptr<Foo>&'
-Foo as return or destructor arg is always 'smart_ptr<Foo>*'
+The C++ implementation methods should reference this as:
+- Foo as an arg is always 'const shared_ptr<Foo>&'
+- Foo as a return is always 'shared_ptr<Foo>'
+The JS representation is a 'shared_ptr<Foo>*' value
 
 TODO:
   For functions returning Foo(), we need to add some code to make sure
-  that the implementation actually returns smart_ptr<Foo> or unique_ptr<Foo>;
-  a bare pointer would silently compile
+  that the implementation actually returns shared_ptr<Foo> or unique_ptr<Foo>;
+  a bare pointer would silently compile 
+
+## callbacks
+
+[SharedPtr] interface SharedClass;
+
+callback FooFn = long (long arg);
+callback SharedFn = SharedPtr (long arg);
+
+C++ representation is a std::unique_ptr<FooFn> class (I want these to be a std::function, but I need
+a destructor)
+JS representation is a normal function object
+
+When used as an argument, from JS to C++:
+    void CallFoo(FooFn f);
+
+JS side:
+
+function CallFoo_token_for_fn(fn) {
+    let token;
+    if (fn in CallFoo_callback_cache) {
+        token = CallFoo_callback_cache[fn];
+    } else {
+        token = CallFoo_callback_next_token++;
+        CallFoo_callback_map[token] = fn;
+        CallFoo_callback_cache[fn] = token;
+    }
+    return token;
+}
+
+function callFoo(fn) {
+    return SomeInterface_CallFoo_0(CallFoo_token_for_fn(fn));
+}
+
+C++ side:
+
+long
+FooFn_call_with_token(long self, long arg1)
+{
+    long ret = EM_ASM_({
+        return CallFoo_callback_map[$0]($1);
+    }, self, arg1);
+    return ret;
+}
+
+class FooFn() {
+public:
+    FooFn() {}
+    long operator()(long arg) {
+        long ret = EM_ASM_({
+            let ret = CallFoo_callback_cache[$0]($1);
+            if (ret.ptr) ret = ret.ptr;
+        }, this, arg);
+    }
+    ~FooFn() {
+        EM_ASM({
+            delete CallFoo_callback_cache[$0];
+        }, this);
+    }
+};
+
+class SharedFn() {
+public:
+    SharedFn() {}
+    const std::shared_ptr<SharedClass>& operator()(long arg) {
+        long ret = EM_ASM_({
+            let ret = CallFoo_callback_cache[$0]($1);
+            if (ret.ptr) ret = ret.ptr;
+        }, this, arg);
+    }
+    ...
+};

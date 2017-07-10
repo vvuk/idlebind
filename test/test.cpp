@@ -1,4 +1,5 @@
 #include <memory>
+#include <functional>
 #include <emscripten.h>
 
 class ClassB {
@@ -45,6 +46,10 @@ public:
 
     std::shared_ptr<SharedClass> MakeShared() { return std::make_shared<SharedClass>(); }
     void DoShared(std::shared_ptr<SharedClass> sc) { sc->Thing(); }
+
+    long AddOne(const std::function<long(long)>& numfn, long arg) {
+        return numfn(arg) + 1;
+    }
 
     ClassC cc;
     int foo;
