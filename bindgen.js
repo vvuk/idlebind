@@ -9,6 +9,7 @@ const f = util.format;
 let interfaces = {};
 let typedefs = {};
 let callbacks = {};
+let valuetypes = {};
 
 function hasExtAttr(attrs, aname, value) {
   if (!attrs)
@@ -136,14 +137,13 @@ function resolveType(idlType, attrs) {
   }
 
   let byref = !!hasExtAttr(attrs, "Ref");
-  let byval = !!hasExtAttr(attrs, "Value");
   let isconst = !!hasExtAttr(attrs, "Const");
 
-  if (idlType.sequence || idlType.union || idlType.nullable || byref || byval || isconst) {
+  if (idlType.sequence || idlType.union || idlType.nullable || byref || isconst) {
     // if anything makes it not a simple type, then generate an object here; otherwise
     // keep it as a string
     itype = { sequence: idlType.sequence, union: idlType.union, nullable: idlType.nullable,
-              byref: byref, byval: byval, isconst: isconst,
+              byref: byref, isconst: isconst,
               idlType: itype };
   }
 
@@ -164,7 +164,6 @@ function typeEquals(a, b) {
         a.union == b.union &&
         a.nullable == b.nullable &&
         a.byref == b.byref &&
-        a.byval == b.byval &&
         a.isconst == b.isconst &&
         typeEquals(a.idlType, b.idlType);
     } else {
@@ -172,11 +171,6 @@ function typeEquals(a, b) {
     }
   }
   return false;
-}
-
-function isByValInterfaceType(rtype) {
-  if (!rtype) return false;
-  return (typeof(rtype) == 'object') && (rtype.byval || rtype.byref) && (rtype.idlType in interfaces);
 }
 
 // helper
@@ -250,15 +244,18 @@ function CppArgType(type) {
     return CppSelfArgType(type);
   if (type in callbacks)
     return 'long';
-  if (isByValInterfaceType(type))
-    return CppArgType(type.idlType);
-  throw `Unknown Cpp arg type for '${type}'`;
+  if (type in valuetypes)
+    return `const ${type}&`;
+  if (type.byref)
+    return `const ${type.idlType}&`;
+  throw `Unknown Cpp arg type for '${prettyjson.render(type)}'`;
 }
 
 function CppReturnType(type) {
-  if (type in interfaces && interfaces[type].sharedPtr) {
+  if (type in interfaces && interfaces[type].sharedPtr)
     return `std::shared_ptr<${type}>*`;
-  }
+  if (type in valuetypes)
+    return `const ${type}*`;
   return CppArgType(type);
 }
 
@@ -281,8 +278,6 @@ function CppArgs(args) {
       s += ")";
       return s;
     }
-    if (isByValInterfaceType(arg.type))
-      return '*' + name;
     return name;
   });
 }
@@ -348,14 +343,14 @@ function resolveArgument(arg) {
 // generate a statement either pulling out the inner ptr
 // from an argument, or moving it into temporary memory
 // (for e.g. strings/arrays) if needed.
-function MakeJSEnsureArg(index, argtype, needEnsure) {
+function MakeJSHeapPtrArg(index, argtype, needTempHeapPtr) {
   let name = "arg" + index;
   if (isBasicType(argtype))
     return;
   let s;
   if (argtype == 'DOMString') {
-    s = `${name} = ensureString(${name});`;
-    needEnsure.value = true;
+    s = `${name} = tempHeapPtrString(${name});`;
+    needTempHeapPtr.value = true;
   } else if (typeof(argtype) === 'object' && argtype.sequence) {
     if (!isBasicType(argtype.idlType)) {
       throw 'JS argument is a sequence but not of a basic type!';
@@ -364,26 +359,29 @@ function MakeJSEnsureArg(index, argtype, needEnsure) {
       case 'boolean':
       case 'byte':
       case 'octet':
-        s = `${name} = ensureI8(${name});`;
+        s = `${name} = tempHeapPtrI8(${name});`;
         break;
       case 'short':
       case 'unsigned short':
-        s = `${name} = ensureI16(${name});`;
+        s = `${name} = tempHeapPtrI16(${name});`;
         break;
       case 'long':
       case 'unsigned long':
-        s = `${name} = ensureI32(${name});`;
+        s = `${name} = tempHeapPtrI32(${name});`;
         break;
       case 'float':
-        s = `${name} = ensureF32(${name});`;
+        s = `${name} = tempHeapPtrF32(${name});`;
         break;
       case 'double':
-        s = `${name} = ensureF64(${name});`;
+        s = `${name} = tempHeapPtrF64(${name});`;
         break;
       default:
         throw `Not sure how to alloc temp sequences of type ${t.idlType}`;
     }
-    needEnsure.value = true;
+    needTempHeapPtr.value = true;
+  } else if (argtype in valuetypes) {
+    s = `{ let p = tempHeapPtrBuffer(${OFFSET_TABLE}[${valuetypes[argtype].sizeOfIndex}]); ${name}.__toPointer(p); ${name} = p; }`;
+    needTempHeapPtr.value = true;
   } else if (argtype in callbacks) {
     s = `${name} = ${argtype}__token_for_fn(${name})`;
   } else {
@@ -403,10 +401,10 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
     let sep = overloads.length == 1 ? '\n    ' : '\n      ';
 
     // generate a call to the right overload, based on number of arguments
-    let needEnsure = { value: false };
-    let inner = ForNArgs(o, sep, (idx,b,argtype) => MakeJSEnsureArg(idx,argtype.type,needEnsure));
-    if (needEnsure.value) {
-      inner = 'ensureCache.prepare();' + sep + inner;
+    let needTempHeapPtr = { value: false };
+    let inner = ForNArgs(o, sep, (idx,b,argtype) => MakeJSHeapPtrArg(idx,argtype.type,needTempHeapPtr));
+    if (needTempHeapPtr.value) {
+      inner = 'tempHeapCache.prepare();' + sep + inner;
     }
     if (inner) inner += sep;
     if (returnType) inner += 'ret = ';
@@ -501,9 +499,9 @@ function makeJSFromCppValue(type, ret, nocache)
     return `Pointer_stringify(${ret})`;
   if (type in interfaces)
     return `${type}.__wrap${nocache?'NoCache':''}(${ret})`;
-  if (isByValInterfaceType(type))
-    return `${type.idlType}.__wrapNoCache(${ret})`;
-  throw `Don't know how to handle JS to C++ types of ${prettyjson.render(ttype)}`;
+  if (type in valuetypes)
+    return `${type}.__fromPointer(${ret})`;
+  throw `Don't know how to handle JS to C++ types of ${prettyjson.render(type)}`;
 }
 
 function makeJSReturnFor(rtype, ret) {
@@ -578,8 +576,8 @@ function handleInterfaceMethods(iface) {
       let call = `${isStatic ? (iface.name+'::') : 'self->'}${cppName}(${CppArgs(o)})`;
 
       cpp += `${CppReturnType(rtype)} EMSCRIPTEN_KEEPALIVE ${CppNameFor(iface.name, cppName, o.length)}(${argdecl}) {\n`;
-      if (isByValInterfaceType(rtype)) {
-        cpp += `  static ${rtype.idlType} temp;\n`;
+      if (rtype in valuetypes) {
+        cpp += `  static ${rtype} temp;\n`;
         cpp += `  temp = ${call};\n`;
         cpp += `  return &temp;\n`;
       } else if (rtype in interfaces && interfaces[rtype].sharedPtr) {
@@ -628,7 +626,7 @@ function handleInterfaceAttributes(iface) {
     let cpp = `${CppReturnType(attr.idlType)} EMSCRIPTEN_KEEPALIVE `
     cpp += `${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : (CppSelfArgType(iface.name) + ' self')}) {\n`;
     let call = attr.static ? `${iface.name}::${attr.cppName}` : `self->${attr.cppName}`;
-    if (isByValInterfaceType(attr.idlType)) {
+    if (attr.idlType in valuetypes) {
       cpp += `  static ${attr.idlType} temp;\n`;
       cpp += `  temp = ${call};\n`;
       cpp += `  return &temp;\n`;
@@ -638,13 +636,13 @@ function handleInterfaceAttributes(iface) {
     cpp += '}';
 
     if (!attr.isReadOnly) {
-      let needEnsure = { value: false };
-      let ensure = MakeJSEnsureArg(0, attr.idlType, needEnsure);
-      if (needEnsure.value)
-        ensure = 'ensureCache.prepare();    ' + ensure;
+      let needTempHeapPtr = { value: false };
+      let tempheap = MakeJSHeapPtrArg(0, attr.idlType, needTempHeapPtr);
+      if (needTempHeapPtr.value)
+        tempheap = 'tempHeapCache.prepare();    ' + tempheap;
 
       js += `\n  set ${attr.name}(arg0) {\n`;
-      if (ensure) js += '    ' + ensure + '\n';
+      if (tempheap) js += '    ' + tempheap + '\n';
       js += `    _${CppPropNameFor(iface.name, attr.name, true)}(${attr.static ? '' : 'this.ptr, '}arg0);\n`;
       js += '  }';
 
@@ -654,8 +652,7 @@ function handleInterfaceAttributes(iface) {
         cpp += `${CppSelfArgType(iface.name)} self, `;
       }
       cpp += `${CppArgType(attr.idlType)} arg0) {\n`;
-      cpp += `  ${attr.static ? `${iface.name}::` : `self->`}${attr.cppName} = `;
-      cpp += isByValInterfaceType(attr.idlType) ? '*arg0;\n' : 'arg0;\n';
+      cpp += `  ${attr.static ? `${iface.name}::` : `self->`}${attr.cppName} = arg0;`;
       cpp += '}';
     }
 
@@ -772,13 +769,129 @@ ${cb.CppCallWithTokenName}(${ForNArgs(args, cb.name, ', ', (idx, name, arg) => (
   return { js: js, cpp: cpp };
 }
 
+let nextOffset = 0;
+let vtoffsets = [];
+
+const OFFSET_TABLE = PFX + "__OFFSET_TABLE";
+function handleValueType(vt)
+{
+  vt.sizeOfIndex = nextOffset++;
+  vtoffsets.push({ sizeof: vt.cppName });
+
+  let members = [];
+  let curvt = vt;
+  while (curvt) {
+    for (let item of curvt.members) {
+      if (item.type != 'attribute')
+        continue;
+      let name = item.name;
+      let cppName = hasExtAttr(item.extAttrs, "CppName");
+      cppName = cppName ? cppName.rhs.value : item.name;
+
+      let type = resolveType(item.idlType);
+      if (type in valuetypes)
+        throw `valuetype ${curvt.name} contains other value type ${type} as member.  Not supported right now, but could be.`;
+      if (type in interfaces)
+        throw `valuetype ${curvt.name} contains non-valuetype interface ${type} as member.  Not supported, we can't get the memory management right.`
+      let cppType = CppBasicType(type);
+      if (!type)
+        throw `valuetype ${curvt.name} contains member ${name} with unsupported type ${type}`;
+
+      let m = {
+        name: name,
+        cppName: cppName,
+        type: type,
+        cppType: cppType,
+        cppBaseType: curvt.cppName,
+      };
+
+      if (item.offsetIndex === undefined) {
+        item.offsetIndex = nextOffset++;
+        vtoffsets.push(m);
+      }
+
+      m.offset = item.offsetIndex;
+      members.push(m);
+    }
+    curvt = curvt.inheritance ? valuetypes[curvt.inheritance] : null;
+  }
+
+  function ForEachMember(fn) {
+    let r = [];
+    for (let m of members) {
+      let initval = m.cppType == 'char *' ? '""' : 0;
+      let heaptype, heapshift;
+      switch (m.cppType) {
+      case 'unsigned char':
+      case 'char':
+        heaptype = 'HEAP8'; heapshift = 0; break;
+      case 'short':
+      case 'unsigned short':
+        heaptype = 'HEAP16'; heapshift = 1; break;
+      case 'long':
+      case 'unsigned long':
+        heaptype = 'HEAP32'; heapshift = 2; break;
+      case 'long long':
+      case 'unsigned long long':
+        throw `Can't support 64-bit long types right now`;
+      case 'float':
+        heaptype = 'HEAPF32'; heapshift = 2; break;
+      case 'double':
+        heaptype = 'HEAPF64'; heapshift = 3; break;
+      case 'char *':
+        throw 'Need to implement string support for value types';
+      };
+
+      let s = fn(m, m.name, initval, heaptype, heapshift);
+      if (s && s != "") r.push(s);
+    }
+    return r;
+  }
+
+  let js = '';
+  js += `class ${vt.name} {
+  constructor() {
+    ${ForEachMember((m, name, initjsval) => `this.${name} = ${initjsval};`).join('\n    ')}
+  }
+  static __fromPointer(ptr) {
+    let v = new ${vt.name};
+    ${ForEachMember((m, name, _, ht, hs) => `v.${name} = ${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}];`).join('\n    ')}
+    return v;
+  }
+  __toPointer(ptr) {
+    ${ForEachMember((m, name, _, ht, hs) => `${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}] = this.${name};`).join('\n    ')}
+  }
+}`;
+
+  let cpp = '';
+
+  return { js: js, cpp: cpp };
+}
+
+function makeOffsetsTable()
+{
+  let js = `let ${OFFSET_TABLE} = new Array(${vtoffsets.length}), ${OFFSET_TABLE}_b = _${OFFSET_TABLE}();
+for (let i = 0; i < ${vtoffsets.length}; ++i) {
+  ${OFFSET_TABLE}[i] = HEAP32[(${OFFSET_TABLE}_b>>2) + i];
+}`;
+
+  let cpp = `size_t* EMSCRIPTEN_KEEPALIVE ${OFFSET_TABLE}() {
+    static size_t v[] = {
+      ${vtoffsets.map((m) => m.sizeof ? `sizeof(${m.sizeof})` : `offsetof(${m.cppBaseType}, ${m.cppName})`).join(',\n      ')}
+    };
+    return &v[0];
+}`;
+
+  return { js: js, cpp: cpp };
+}
+
 let bindings = [];
 
 // preamble, largerly taken from Emscripten's webidl_bind
 const jsPreamble = `// AUTOMATICALLY GENERATED BY jsbindgen
 // DO NOT EDIT
 
-var ensureCache = {
+var tempHeapCache = {
   buffer: 0,  // the main buffer of temporary storage
   size: 0,   // the size of buffer
   pos: 0,    // the next free offset in buffer
@@ -806,10 +919,8 @@ var ensureCache = {
     }
     this.pos = 0;
   },
-  alloc: function(array, view) {
+  allocBytes: function(len) {
     assert(this.buffer);
-    var bytes = view.BYTES_PER_ELEMENT;
-    var len = array.length * bytes;
     len = (len + 7) & -8; // keep things aligned to 8 byte boundaries
     var ret;
     if (this.pos + len >= this.size) {
@@ -823,6 +934,12 @@ var ensureCache = {
       ret = this.buffer + this.pos;
       this.pos += len;
     }
+    return ret;
+  },
+  allocForArray: function(array, view) {
+    var bytes = view.BYTES_PER_ELEMENT;
+    var len = array.length * bytes;
+    var ret = this.allocBytes(len);
     var retShifted = ret;
     switch (bytes) {
       case 2: retShifted >>= 1; break;
@@ -836,29 +953,32 @@ var ensureCache = {
   },
 };
 
-function ensureString(value) {
-  if (typeof value === 'string') return ensureCache.alloc(intArrayFromString(value), HEAP8);
+function tempHeapPtrString(value) {
+  if (typeof value === 'string') return tempHeapCache.allocForArray(intArrayFromString(value), HEAP8);
   return value;
 }
-function ensureI8(value) {
-  if (typeof value === 'object') return ensureCache.alloc(value, HEAP8);
+function tempHeapPtrI8(value) {
+  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP8);
   return value;
 }
-function ensureI16(value) {
-  if (typeof value === 'object') return ensureCache.alloc(value, HEAP16);
+function tempHeapPtrI16(value) {
+  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP16);
   return value;
 }
-function ensureI32(value) {
-  if (typeof value === 'object') return ensureCache.alloc(value, HEAP32);
+function tempHeapPtrI32(value) {
+  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP32);
   return value;
 }
-function ensureF32(value) {
-  if (typeof value === 'object') return ensureCache.alloc(value, HEAPF32);
+function tempHeapPtrF32(value) {
+  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAPF32);
   return value;
 }
-function ensureF64(value) {
-  if (typeof value === 'object') return ensureCache.alloc(value, HEAPF64);
+function tempHeapPtrF64(value) {
+  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAPF64);
   return value;
+}
+function tempHeapPtrBuffer(size) {
+  return tempHeapCache.allocBytes(size);
 }
 `;
 
@@ -885,7 +1005,13 @@ for (let item of tree) {
     let sharedPtr = !!hasExtAttr(item.extAttrs, "SharedPtr");
     item.sharedPtr = sharedPtr;
 
-    interfaces[item.name] = item;
+    let valueType = !!hasExtAttr(item.extAttrs, "ValueType");
+    if (valueType) {
+      if (item.sharedPtr) throw "Value types can't be SharedPtr";
+      valuetypes[item.name] = item;
+    } else {
+      interfaces[item.name] = item;
+    }
   } else if (item.type == 'typedef') {
     typedefs[item.name] = item.idlType;
   } else if (item.type == 'callback') {
@@ -902,6 +1028,19 @@ for (let k of Object.keys(interfaces)) {
     throw `interfaces ${parent} and ${k} must both be sharedPtr if one is`;
 }
 
+for (let k of Object.keys(valuetypes)) {
+  let vt = valuetypes[k];
+  let parent = vt.inheritance;
+  if (parent && !valuetypes[parent])
+    throw `valuetype ${k} can only inherit from another value type (not ${parent})`;
+  for (let m of vt.members) {
+    if (m.type != 'attribute')
+      throw `valuetype ${k} must only contain attributes (found ${m.name}: ${m.type})`;
+    if (m.isReadOnly)
+      throw `valuetype ${k} attr ${m.name} can't be readonly`;
+  }
+}
+
 let OpaqueWrapperTypeInterface = {
   name: 'OpaqueWrapperType',
   members: [],
@@ -912,6 +1051,10 @@ interfaces[OpaqueWrapperTypeInterface.name] = OpaqueWrapperTypeInterface;
 
 //pp(tree);
 
+for (let name of Object.keys(valuetypes)) {
+  bindings.push(handleValueType(valuetypes[name]));
+}
+
 for (let name of Object.keys(callbacks)) {
   bindings.push(handleCallback(callbacks[name]));
 }
@@ -919,6 +1062,8 @@ for (let name of Object.keys(callbacks)) {
 for (let name of Object.keys(interfaces)) {
   bindings.push(handleInterface(interfaces[name]));
 }
+
+bindings.push(makeOffsetsTable());
 
 let jsfd = fs.openSync(outbase + '.js', 'w');
 fs.writeSync(jsfd, jsPreamble);

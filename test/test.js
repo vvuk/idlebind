@@ -3,12 +3,15 @@ ClassA.StaticMethod();
 var b = a.MakeAB();
 b.Foo(42);
 
-var cc = a.GetC();
-cc.v = 0;
-console.log(a.GetC().v);
-cc.v = 123;
-a.SetC(cc);
-console.log(a.GetC().v);
+var vec = a.GetVec();
+console.log("vec", vec.x, vec.y);
+vec.x = 9999;
+vec = a.GetVec();
+console.log("vec", vec.x, vec.y);
+vec.x = 1234;
+a.SetVec(vec);
+vec = a.GetVec();
+console.log("vec", vec.x, vec.y);
 
 var q = new ClassBSubJS();
 q.Foo(24);

@@ -1,7 +1,13 @@
-
 interface ClassC
 {
     attribute long v;
+};
+
+[ValueType]
+interface Vec2D
+{
+    attribute long x;
+    attribute long y;
 };
 
 [Constructor()]
@@ -40,8 +46,10 @@ interface ClassA
 
     static attribute long staticFoo;
 
-    [Value] ClassC GetC();
     void SetC([Ref] ClassC v);
+
+    Vec2D GetVec();
+    void SetVec(Vec2D v);
 
     SharedClass MakeShared();
     void DoShared(SharedClass sc);

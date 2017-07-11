@@ -2,6 +2,11 @@
 #include <functional>
 #include <emscripten.h>
 
+struct Vec2D {
+    long x;
+    long y;
+};
+
 class ClassB {
 public:
     ClassB() {}
@@ -43,7 +48,7 @@ public:
     }
 
     ClassC GetC() { return cc; }
-    void SetC(ClassC& c) { cc = c; };
+    void SetC(const ClassC& c) { cc = c; };
 
     std::shared_ptr<SharedClass> MakeShared() { return std::make_shared<SharedClass>(); }
     void DoShared(std::shared_ptr<SharedClass> sc) { sc->Thing(); }
@@ -57,10 +62,14 @@ public:
         return gfn(thing) + arg;
     }
 
+    Vec2D GetVec() { return vv; }
+    void SetVec(const Vec2D& nv) { vv = nv; }
+
     ClassC cc;
     int foo;
     int bar;
     static int staticFoo;
+    Vec2D vv;
 };
 
 int ClassA::staticFoo = 123;
