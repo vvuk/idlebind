@@ -21,14 +21,15 @@ interface ClassBSubJS : ClassB
  Constructor()]
 interface SharedClass
 {
-    void Thing();
+    long Thing();
 };
 
 callback GetANumber = long (long input);
+callback GetFromThing = long (SharedClass input);
 
 [Constructor,
- Constructor(long x),
- Constructor(long x, ClassB y)]
+ Constructor(long x, ClassB y),
+ Constructor(GetANumber g)]
 interface ClassA
 {
     static void StaticMethod();
@@ -46,5 +47,6 @@ interface ClassA
     void DoShared(SharedClass sc);
 
     long AddOne(GetANumber numfn, long arg);
+    long AddOneThing(GetFromThing gft, long arg);
 };
 

@@ -23,14 +23,15 @@ class SharedClass : public std::enable_shared_from_this<SharedClass> {
 public:
     SharedClass() { printf ("SharedClass()\n"); }
     ~SharedClass() { printf("~SharedClass()\n"); }
-    void Thing() { printf("SharedClass::Thing()\n"); }
+    long Thing() { printf("SharedClass::Thing()\n"); return 5; }
 };
 
 class ClassA {
 public:
     ClassA() { printf("ClassA()\n"); }
-    ClassA(int x) { printf("ClassA(%d)\n", x); }
     ClassA(int x, ClassB *p) { printf("ClassA(%d, %p)\n", x, p); }
+    ClassA(const std::function<long(long)>& numfn) { foo = numfn(3); }
+
     ~ClassA() { printf("~ClassA()\n"); }
 
     static void StaticMethod() {
@@ -49,6 +50,11 @@ public:
 
     long AddOne(const std::function<long(long)>& numfn, long arg) {
         return numfn(arg) + 1;
+    }
+
+    long AddOneThing(const std::function<long(const std::shared_ptr<SharedClass>&)>& gfn, long arg) {
+        auto thing = std::make_shared<SharedClass>();
+        return gfn(thing) + arg;
     }
 
     ClassC cc;

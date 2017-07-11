@@ -34,3 +34,7 @@ for (var i = 0; i < 5; ++i) {
 
 a.destroy();
 q.destroy();
+
+a = new ClassA(function(v) { return v * 5; });
+console.log(a.foo);
+a.destroy();
