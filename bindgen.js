@@ -200,7 +200,13 @@ function pp(o) {
   console.log(prettyjson.render(objDeepCopyNoFalse(o)));
 }
 
-const BASE_MODULE = 'Module';
+var MODULE, PRIVATE, OFFSET_TABLE;
+function setModuleName(name) {
+  MODULE = name;
+  PRIVATE = `${MODULE}__private`;
+  OFFSET_TABLE = `${PRIVATE}.offsetTable`;
+}
+
 const PFX = 'jsbind_';
 const DESTRUCTOR = '__DESTROY__';
 const CALL_WITH_TOKEN = '__CB__';
@@ -349,7 +355,7 @@ function MakeJSHeapPtrArg(index, argtype, needTempHeapPtr) {
     return;
   let s;
   if (argtype == 'DOMString') {
-    s = `${name} = tempHeapPtrString(${name});`;
+    s = `${name} = ${PRIVATE}.tempHeapPtrString(${name});`;
     needTempHeapPtr.value = true;
   } else if (typeof(argtype) === 'object' && argtype.sequence) {
     if (!isBasicType(argtype.idlType)) {
@@ -359,31 +365,31 @@ function MakeJSHeapPtrArg(index, argtype, needTempHeapPtr) {
       case 'boolean':
       case 'byte':
       case 'octet':
-        s = `${name} = tempHeapPtrI8(${name});`;
+        s = `${name} = ${PRIVATE}.tempHeapPtrI8(${name});`;
         break;
       case 'short':
       case 'unsigned short':
-        s = `${name} = tempHeapPtrI16(${name});`;
+        s = `${name} = ${PRIVATE}.tempHeapPtrI16(${name});`;
         break;
       case 'long':
       case 'unsigned long':
-        s = `${name} = tempHeapPtrI32(${name});`;
+        s = `${name} = ${PRIVATE}.tempHeapPtrI32(${name});`;
         break;
       case 'float':
-        s = `${name} = tempHeapPtrF32(${name});`;
+        s = `${name} = ${PRIVATE}.tempHeapPtrF32(${name});`;
         break;
       case 'double':
-        s = `${name} = tempHeapPtrF64(${name});`;
+        s = `${name} = ${PRIVATE}.tempHeapPtrF64(${name});`;
         break;
       default:
         throw `Not sure how to alloc temp sequences of type ${t.idlType}`;
     }
     needTempHeapPtr.value = true;
   } else if (argtype in valuetypes) {
-    s = `{ let p = tempHeapPtrBuffer(${OFFSET_TABLE}[${valuetypes[argtype].sizeOfIndex}]); ${name}.__toPointer(p); ${name} = p; }`;
+    s = `{ let p = ${PRIVATE}.tempHeapPtrBuffer(${OFFSET_TABLE}[${valuetypes[argtype].sizeOfIndex}]); ${name}.__toPointer(p); ${name} = p; }`;
     needTempHeapPtr.value = true;
   } else if (argtype in callbacks) {
-    s = `${name} = ${argtype}__token_for_fn(${name})`;
+    s = `${name} = ${PRIVATE}.${argtype}__token_for_fn(${name})`;
   } else {
     s = `${name} = ${name}.ptr;`;
   }
@@ -404,7 +410,7 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
     let needTempHeapPtr = { value: false };
     let inner = ForNArgs(o, sep, (idx,b,argtype) => MakeJSHeapPtrArg(idx,argtype.type,needTempHeapPtr));
     if (needTempHeapPtr.value) {
-      inner = 'tempHeapCache.prepare();' + sep + inner;
+      inner = `${PRIVATE}.tempHeapCache.prepare();` + sep + inner;
     }
     if (inner) inner += sep;
     if (returnType) inner += 'ret = ';
@@ -498,9 +504,9 @@ function makeJSFromCppValue(type, ret, nocache)
   if (type === 'DOMString')
     return `Pointer_stringify(${ret})`;
   if (type in interfaces)
-    return `${type}.__wrap${nocache?'NoCache':''}(${ret})`;
+    return `${MODULE}.${type}.__wrap${nocache?'NoCache':''}(${ret})`;
   if (type in valuetypes)
-    return `${type}.__fromPointer(${ret})`;
+    return `${MODULE}.${type}.__fromPointer(${ret})`;
   throw `Don't know how to handle JS to C++ types of ${prettyjson.render(type)}`;
 }
 
@@ -669,23 +675,24 @@ function handleInterface(iface) {
   let constructors = handleInterfaceConstructors(iface);
   let methods = handleInterfaceMethods(iface);
   let attributes = handleInterfaceAttributes(iface);
-
+  let cache = `${PRIVATE}.${iface.name}___CACHE`;
   let js = `
-var ${iface.name}___CACHE = {};
-class ${iface.name} ${superclass ? 'extends ' + superclass : ''}{
+${cache} = {};
+${MODULE}.${iface.name} =
+class ${iface.name} ${superclass ? `extends ${MODULE}.${superclass} ` : ''}{
 ${constructors.js}
 ${methods.js}
 ${attributes.js}
   static __setCache(obj) {
-    ${iface.name}___CACHE[obj.ptr] = obj;
+    ${cache}[obj.ptr] = obj;
   }
 
   static __wrap(ptr) {
-    let obj = ${iface.name}___CACHE[ptr];
+    let obj = ${cache}[ptr];
     if (!obj) {
       obj = Object.create(${iface.name}.prototype);
       obj.ptr = ptr;
-      ${iface.name}___CACHE[ptr] = obj;
+      ${cache}[ptr] = obj;
     }
     return obj;
   }
@@ -700,13 +707,13 @@ ${attributes.js}
     js += `
   destroy() {
     _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
-    delete ${iface.name}___CACHE[this.ptr];
+    delete ${cache}[this.ptr];
     delete this.ptr;
    }
 `;
   }
 
-  js += '}\n';
+  js += '};\n'; // semicolon because we're assigning to ${MODULE}.${iface.name} as well
 
   // The C++ is simpler
   let cpp = [constructors.cpp, methods.cpp, attributes.cpp].join("\n");
@@ -722,19 +729,19 @@ function handleCallback(cb) {
   if (rtype == 'void') rtype = null;
 
   let js = `
-var ${cb.name}__next_token = 1;
-var ${cb.name}__cb_cache = {};
-var ${cb.name}__cb_map = {};
-function ${cb.name}__token_for_fn(fn) {
+${PRIVATE}.${cb.name}__next_token = 1;
+${PRIVATE}.${cb.name}__cb_cache = {};
+${PRIVATE}.${cb.name}__cb_map = {};
+${PRIVATE}.${cb.name}__token_for_fn = function(fn) {
   if (typeof(fn) != 'function') throw 'Not a function';
-  let token = ${cb.name}__cb_cache[fn];
+  let token = ${PRIVATE}.${cb.name}__cb_cache[fn];
   if (!token) {
-    token = ${cb.name}__next_token++;
-    ${cb.name}__cb_map[token] = fn;
-    ${cb.name}__cb_cache[fn] = token;
+    token = ${PRIVATE}.${cb.name}__next_token++;
+    ${PRIVATE}.${cb.name}__cb_map[token] = fn;
+    ${PRIVATE}.${cb.name}__cb_cache[fn] = token;
   }
   return token;
-}`;
+};`;
 
   cb.CppCallWithTokenName = CppNameFor(cb.name, CALL_WITH_TOKEN, args.length);
   let cpp = `
@@ -761,7 +768,7 @@ ${cb.CppCallWithTokenName}(${ForNArgs(args, cb.name, ', ', (idx, name, arg) => (
   if (conversions)
     cpp += '\n    ' + conversions;
   cpp += `
-    return ${cb.name}__cb_map[$0](${ForNArgs(args, (idx, name, arg) => '$' + (idx+1))});
+    return ${PRIVATE}.${cb.name}__cb_map[$0](${ForNArgs(args, (idx, name, arg) => '$' + (idx+1))});
   }, self${argnames.length > 0 ? ', ' + argnames.join(', ') : ''});
 }
 `;
@@ -772,7 +779,6 @@ ${cb.CppCallWithTokenName}(${ForNArgs(args, cb.name, ', ', (idx, name, arg) => (
 let nextOffset = 0;
 let vtoffsets = [];
 
-const OFFSET_TABLE = PFX + "__OFFSET_TABLE";
 function handleValueType(vt)
 {
   vt.sizeOfIndex = nextOffset++;
@@ -792,7 +798,7 @@ function handleValueType(vt)
       if (type in valuetypes)
         throw `valuetype ${curvt.name} contains other value type ${type} as member.  Not supported right now, but could be.`;
       if (type in interfaces)
-        throw `valuetype ${curvt.name} contains non-valuetype interface ${type} as member.  Not supported, we can't get the memory management right.`
+        throw `valuetype ${curvt.name} contains non-valuetype interface ${type} as member.  Not supported, we can't get the memory management right.`;
       let cppType = CppBasicType(type);
       if (!type)
         throw `valuetype ${curvt.name} contains member ${name} with unsupported type ${type}`;
@@ -849,7 +855,9 @@ function handleValueType(vt)
   }
 
   let js = '';
-  js += `class ${vt.name} {
+  js += `
+${MODULE}.${vt.name} =
+class ${vt.name} {
   constructor() {
     ${ForEachMember((m, name, initjsval) => `this.${name} = ${initjsval};`).join('\n    ')}
   }
@@ -861,7 +869,7 @@ function handleValueType(vt)
   __toPointer(ptr) {
     ${ForEachMember((m, name, _, ht, hs) => `${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}] = this.${name};`).join('\n    ')}
   }
-}`;
+};\n`; // semicolon because of the assignment before class
 
   let cpp = '';
 
@@ -870,12 +878,17 @@ function handleValueType(vt)
 
 function makeOffsetsTable()
 {
-  let js = `let ${OFFSET_TABLE} = new Array(${vtoffsets.length}), ${OFFSET_TABLE}_b = _${OFFSET_TABLE}();
-for (let i = 0; i < ${vtoffsets.length}; ++i) {
-  ${OFFSET_TABLE}[i] = HEAP32[(${OFFSET_TABLE}_b>>2) + i];
+  let cppFn = `${PFX}__GetOffsetTable`;
+  let js = `
+if (${vtoffsets.length}) {
+  ${OFFSET_TABLE} = new Array(${vtoffsets.length});
+  let base = _${cppFn}() >> 2;
+  for (let i = 0; i < ${vtoffsets.length}; ++i) {
+    ${OFFSET_TABLE}[i] = HEAP32[base + i];
+  }
 }`;
 
-  let cpp = `size_t* EMSCRIPTEN_KEEPALIVE ${OFFSET_TABLE}() {
+  let cpp = `size_t* EMSCRIPTEN_KEEPALIVE ${cppFn}() {
     static size_t v[] = {
       ${vtoffsets.map((m) => m.sizeof ? `sizeof(${m.sizeof})` : `offsetof(${m.cppBaseType}, ${m.cppName})`).join(',\n      ')}
     };
@@ -888,10 +901,15 @@ for (let i = 0; i < ${vtoffsets.length}; ++i) {
 let bindings = [];
 
 // preamble, largerly taken from Emscripten's webidl_bind
-const jsPreamble = `// AUTOMATICALLY GENERATED BY jsbindgen
+function jsPreamble()
+{
+    let js = `// AUTOMATICALLY GENERATED BY jsbindgen
 // DO NOT EDIT
 
-var tempHeapCache = {
+var ${MODULE} = ${MODULE} || {};
+var ${PRIVATE} = ${PRIVATE} || {};
+
+${PRIVATE}.tempHeapCache = {
   buffer: 0,  // the main buffer of temporary storage
   size: 0,   // the size of buffer
   pos: 0,    // the next free offset in buffer
@@ -953,34 +971,37 @@ var tempHeapCache = {
   },
 };
 
-function tempHeapPtrString(value) {
-  if (typeof value === 'string') return tempHeapCache.allocForArray(intArrayFromString(value), HEAP8);
+${PRIVATE}.tempHeapPtrString = function(value) {
+  if (typeof value === 'string') return ${PRIVATE}.tempHeapCache.allocForArray(intArrayFromString(value), HEAP8);
   return value;
 }
-function tempHeapPtrI8(value) {
-  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP8);
+${PRIVATE}.tempHeapPtrI8 = function(value) {
+  if (typeof value === 'object') return ${PRIVATE}.tempHeapCache.allocForArray(value, HEAP8);
   return value;
 }
-function tempHeapPtrI16(value) {
-  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP16);
+${PRIVATE}.tempHeapPtrI16 = function(value) {
+  if (typeof value === 'object') return ${PRIVATE}.tempHeapCache.allocForArray(value, HEAP16);
   return value;
 }
-function tempHeapPtrI32(value) {
-  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAP32);
+${PRIVATE}.tempHeapPtrI32 = function(value) {
+  if (typeof value === 'object') return ${PRIVATE}.tempHeapCache.allocForArray(value, HEAP32);
   return value;
 }
-function tempHeapPtrF32(value) {
-  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAPF32);
+${PRIVATE}.tempHeapPtrF32 = function(value) {
+  if (typeof value === 'object') return ${PRIVATE}.tempHeapCache.allocForArray(value, HEAPF32);
   return value;
 }
-function tempHeapPtrF64(value) {
-  if (typeof value === 'object') return tempHeapCache.allocForArray(value, HEAPF64);
+${PRIVATE}.tempHeapPtrF64 = function(value) {
+  if (typeof value === 'object') return ${PRIVATE}.tempHeapCache.allocForArray(value, HEAPF64);
   return value;
 }
-function tempHeapPtrBuffer(size) {
-  return tempHeapCache.allocBytes(size);
+${PRIVATE}.tempHeapPtrBuffer = function(size) {
+  return ${PRIVATE}.tempHeapCache.allocBytes(size);
 }
 `;
+
+  return { js: js, cpp: "" };
+}
 
 /* ======
  * (main)
@@ -990,9 +1011,12 @@ function tempHeapPtrBuffer(size) {
 
 let infile = process.argv[2];
 let outbase = process.argv[3];
+let modulename = process.argv[4] || "Module";
 if (!outbase) {
   throw "need an output base filename";
 }
+
+setModuleName(modulename);
 
 let infilestr = fs.readFileSync(process.argv[2], 'utf8');
 let tree = webidl.parse(infilestr);
@@ -1051,6 +1075,8 @@ interfaces[OpaqueWrapperTypeInterface.name] = OpaqueWrapperTypeInterface;
 
 //pp(tree);
 
+bindings.push(jsPreamble());
+
 for (let name of Object.keys(valuetypes)) {
   bindings.push(handleValueType(valuetypes[name]));
 }
@@ -1066,7 +1092,6 @@ for (let name of Object.keys(interfaces)) {
 bindings.push(makeOffsetsTable());
 
 let jsfd = fs.openSync(outbase + '.js', 'w');
-fs.writeSync(jsfd, jsPreamble);
 for (let b of bindings) {
   fs.writeSync(jsfd, b.js);
 }
