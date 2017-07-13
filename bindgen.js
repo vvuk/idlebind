@@ -6,7 +6,7 @@ const prettyjson = require('prettyjson');
 const util = require('util');
 const f = util.format;
 
-let ES6 = false;
+let ES6 = true;
 
 let interfaces = {};
 let typedefs = {};
@@ -761,7 +761,7 @@ ${cache} = {};
       js += `  get: function${indentLines(a.getsrc, '  ')}`;
       if (a.setsrc)
         js += `,\n  set: function${indentLines(a.setsrc, '  ')}`;
-      js += `});\n`;
+      js += `\n});\n`;
     }
   }
 
@@ -904,22 +904,17 @@ function handleValueType(vt)
     return r;
   }
 
-  let js = '';
-  js += `
-${MODULE}.${vt.name} =
-class ${vt.name} {
-  constructor() {
-    ${ForEachMember((m, name, initjsval) => `this.${name} = ${initjsval};`).join('\n    ')}
-  }
-  static __fromPointer(ptr) {
-    let v = new ${vt.name};
-    ${ForEachMember((m, name, _, ht, hs) => `v.${name} = ${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}];`).join('\n    ')}
-    return v;
-  }
-  __toPointer(ptr) {
-    ${ForEachMember((m, name, _, ht, hs) => `${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}] = this.${name};`).join('\n    ')}
-  }
-};\n`; // semicolon because of the assignment before class
+  let js = `${MODULE}.${vt.name} = function() {
+  ${ForEachMember((m, name, initjsval) => `this.${name} = ${initjsval};`).join('\n    ')}
+};
+${MODULE}.${vt.name}.__fromPointer = function(ptr) {
+  let v = new ${vt.name};
+  ${ForEachMember((m, name, _, ht, hs) => `v.${name} = ${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}];`).join('\n    ')}
+  return v;
+};
+${MODULE}.${vt.name}.prototype.__toPointer = function(ptr) {
+  ${ForEachMember((m, name, _, ht, hs) => `${ht}[(ptr+${OFFSET_TABLE}[${m.offset}])>>${hs}] = this.${name};`).join('\n    ')}
+};`;
 
   let cpp = '';
 
