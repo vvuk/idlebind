@@ -1,3 +1,5 @@
+(function(global) { Object.assign(global, Bindings); })(typeof(window) !== 'undefined' ? window : global);
+
 var a = new ClassA();
 ClassA.StaticMethod();
 var b = a.MakeAB();

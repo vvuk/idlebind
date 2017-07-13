@@ -629,11 +629,11 @@ function handleInterfaceAttributes(iface) {
   for (let k of Object.keys(attributes)) {
     let attr = attributes[k];
 
-    let js = `
-  get ${attr.name}() {
-    let ret = _${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : 'this.ptr'});
-    ${makeJSReturnFor(attr.idlType, 'ret')}
-  }`;
+    let jsget = `() {
+  let ret = _${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : 'this.ptr'});
+  ${makeJSReturnFor(attr.idlType, 'ret')}
+}`;
+    let jsset = null;
 
     let cpp = `${CppReturnType(attr.idlType)} EMSCRIPTEN_KEEPALIVE `
     cpp += `${CppPropNameFor(iface.name, attr.name, false)}(${attr.static ? '' : (CppSelfArgType(iface.name) + ' self')}) {\n`;
@@ -650,13 +650,12 @@ function handleInterfaceAttributes(iface) {
     if (!attr.isReadOnly) {
       let needTempHeapPtr = { value: false };
       let tempheap = MakeJSHeapPtrArg(0, attr.idlType, needTempHeapPtr);
-      if (needTempHeapPtr.value)
-        tempheap = 'tempHeapCache.prepare();    ' + tempheap;
 
-      js += `\n  set ${attr.name}(arg0) {\n`;
-      if (tempheap) js += '    ' + tempheap + '\n';
-      js += `    _${CppPropNameFor(iface.name, attr.name, true)}(${attr.static ? '' : 'this.ptr, '}arg0);\n`;
-      js += '  }';
+      jsset = `(arg0) {\n`;
+      if (needTempHeapPtr.value)
+        jsset += '  tempHeapCache.prepare();    ' + tempheap + '\n';
+      jsset += `  _${CppPropNameFor(iface.name, attr.name, true)}(${attr.static ? '' : 'this.ptr, '}arg0);\n`;
+      jsset += '}';
 
       cpp += '\nvoid EMSCRIPTEN_KEEPALIVE ';
       cpp += `${CppPropNameFor(iface.name, attr.name, true)}(`;
@@ -668,11 +667,11 @@ function handleInterfaceAttributes(iface) {
       cpp += '}';
     }
 
-    jsattrs.push(js);
+    jsattrs.push({ name: attr.name, isStatic: attr.static, getsrc: jsget, setsrc: jsset});
     cppattrs.push(cpp);
   }
 
-  return { js: jsattrs.join("\n"), cpp: cppattrs.join("\n") };
+  return { jsattrs: jsattrs, cpp: cppattrs.join("\n") };
 }
 
 function handleInterface(iface) {
@@ -722,16 +721,49 @@ function handleInterface(iface) {
   delete this.ptr;
 }`});
   }
-    
+
   let js = `
 ${cache} = {};
-${MODULE}.${iface.name} =
-class ${iface.name} ${superclass ? `extends ${MODULE}.${superclass} ` : ''}{
-  constructor${indentLines(constructor.js, '  ')}
-${methods.jsmethods.map((m) => (m.isStatic ? '  static ' : '  ') + m.name + indentLines(m.src, '  ')).join("\n")}
-${attributes.js}
-};
-`; // semicolon because we're assigning to ${MODULE}.${iface.name} as well
+`;
+
+  if (ES6) {
+    js += `${MODULE}.${iface.name} =\n`;
+    js += `class ${iface.name} ${superclass ? `extends ${MODULE}.${superclass} ` : ''}{\n`;
+    js += `  constructor${indentLines(constructor.js, '  ')}\n`;
+    for (let m of methods.jsmethods) {
+      js += m.isStatic ? '  static ' : '  ';
+      js += m.name;
+      js += indentLines(m.src, '  ');
+      js += '\n';
+    }
+    for (let attr of attributes.jsattrs) {
+      js += attr.isStatic ? '  static ' : '  ';
+      js += `get ${attr.name}` + indentLines(attr.getsrc, '  ') + '\n';
+      if (attr.setsrc)
+        js += `set ${attr.name}` + indentLines(attr.setsrc, '  ') + '\n';
+    }
+    js += '};\n'; // semicolon because we're assigning to ${MODULE}.${iface.name} as well
+  } else {
+    js += `${MODULE}.${iface.name} = function${constructor.js};\n`;
+    if (superclass) {
+      js += `${MODULE}.${iface.name}.prototype = Object.create(${MODULE}.${superclass}.prototype);\n`;
+      js += `${MODULE}.${iface.name}.prototype.constructor = ${MODULE}.${iface.name};\n`;
+    }
+    for (let m of methods.jsmethods) {
+      if (m.isStatic) {
+        js += `${MODULE}.${iface.name}.${m.name} = function${m.src};\n`;
+      } else {
+        js += `${MODULE}.${iface.name}.prototype.${m.name} = function${m.src};\n`;
+      }
+    }
+    for (let a of attributes.jsattrs) {
+      js += `Object.defineProperty(${MODULE}.${iface.name}${a.isStatic ? '' : '.prototype'}, '${a.name}', {\n`;
+      js += `  get: function${indentLines(a.getsrc, '  ')}`;
+      if (a.setsrc)
+        js += `,\n  set: function${indentLines(a.setsrc, '  ')}`;
+      js += `});\n`;
+    }
+  }
 
   // The C++ is simpler
   let cpp = [constructor.cpp, methods.cpp, attributes.cpp].join("\n");
@@ -1113,6 +1145,7 @@ let jsfd = fs.openSync(outbase + '.js', 'w');
 for (let b of bindings) {
   fs.writeSync(jsfd, b.js);
 }
+fs.writeSync(jsfd, '\n');
 fs.closeSync(jsfd);
 
 let cppfd = fs.openSync(outbase + '.cpp', 'w');
