@@ -6,6 +6,8 @@ const prettyjson = require('prettyjson');
 const util = require('util');
 const f = util.format;
 
+let ES6 = false;
+
 let interfaces = {};
 let typedefs = {};
 let callbacks = {};
@@ -194,6 +196,10 @@ function objDeepCopyNoFalse(o) {
     n[prop] = val;
   }
   return n;
+}
+
+function indentLines(srcstr, pad) {
+  return srcstr.replace(/\n/g, `\n${pad}`);
 }
 
 function pp(o) {
@@ -404,7 +410,7 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
   let js = '';
   for (let oi = 0; oi < overloads.length; ++oi) {
     let o = overloads[oi];
-    let sep = overloads.length == 1 ? '\n    ' : '\n      ';
+    let sep = overloads.length == 1 ? '\n  ' : '\n    ';
 
     // generate a call to the right overload, based on number of arguments
     let needTempHeapPtr = { value: false };
@@ -419,10 +425,10 @@ function makeJSOverloadedCall(iface, name, isStatic, returnType, overloads) {
     // actually select it in the JS, based on the number of arguments passed in (with
     // later arguments being undefined).  We generate an if/else chain.
     if (o.length != maxArgs) {
-      if (oi != 0) js += '    else ';
-      js += `if (arg${o.length} === undefined) {\n      ${inner}\n    }\n`;
+      if (oi != 0) js += '  else ';
+      js += `if (arg${o.length} === undefined) {\n    ${inner}\n  }\n`;
     } else if (oi != 0) {
-      js += `    else {\n      ${inner}\n    }`;
+      js += `  else {\n    ${inner}\n  }`;
      } else {
       js += `${inner}`;
     }
@@ -452,21 +458,21 @@ function handleInterfaceConstructors(iface) {
 
   // generate the JS
   let js = '';
-  js += `  constructor(${ForNArgs(maxArgs, 'arg')}) {`;
+  js += `(${ForNArgs(maxArgs, 'arg')}) {`;
   // we should check and see if an arg in this position could
   // possibly be an object, and only do this if so
   if (constructors.overloads.length == 0) {
-    js += `\n    throw "No constructor defined for ${iface.name}";\n`
+    js += `\n  throw "No constructor defined for ${iface.name}";\n`
   } else {
     js += `
-    let ret, obj = Object.create(new.target.prototype);
-    ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors.overloads)}
-    obj.ptr = ret;
-    ${iface.name}.__setCache(obj);
-    return obj;
+  let ret, obj = Object.create(new.target.prototype);
+  ${makeJSOverloadedCall(iface, iface.name, true, iface.name, constructors.overloads)}
+  obj.ptr = ret;
+  ${iface.name}.__setCache(obj);
+  return obj;
 `;
   }
-  js += '  }\n';
+  js += '}';
 
   // generate the C++
   let cpp = '';
@@ -560,16 +566,17 @@ function handleInterfaceMethods(iface) {
     let maxArgs = method.maxArgs;
 
     let js = '';
-    js += isStatic ? '  static ' : '  ';
-    js += `${jsName}(${ForNArgs(maxArgs, 'arg')}) {\n`;
-    js += isStatic ? '' : '    let self = this.ptr;\n';
-    js += rtype ? '    let ret;\n' : '';
-    js += '    ' + makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
+    js += `(${ForNArgs(maxArgs, 'arg')}) {\n`;
+    js += isStatic ? '' : '  let self = this.ptr;\n';
+    js += rtype ? '  let ret;\n' : '';
+    js += '  ' + makeJSOverloadedCall(iface, cppName, isStatic, rtype, overloads);
     js += '\n';
     if (rtype) {
-      js += '    ' + makeJSReturnFor(rtype, 'ret') + '\n';
+      js += '  ' + makeJSReturnFor(rtype, 'ret') + '\n';
     }
-    js += '  }\n';
+    js += '}';
+
+    jsmethods.push({ name: jsName, src: js, isStatic: isStatic });
 
     let cpp = '';
     for (let o of overloads) {
@@ -597,11 +604,10 @@ function handleInterfaceMethods(iface) {
       cpp += '}\n';
     }
 
-    jsmethods.push(js);
     cppmethods.push(cpp);
   }
 
-  return { js: jsmethods.join("\n"), cpp: cppmethods.join("\n") };
+  return { jsmethods: jsmethods, cpp: cppmethods.join("\n") };
 }
 
 function handleInterfaceAttributes(iface) {
@@ -672,51 +678,63 @@ function handleInterfaceAttributes(iface) {
 function handleInterface(iface) {
   let superclass = iface['inheritance'];
 
-  let constructors = handleInterfaceConstructors(iface);
+  let constructor = handleInterfaceConstructors(iface);
   let methods = handleInterfaceMethods(iface);
   let attributes = handleInterfaceAttributes(iface);
   let cache = `${PRIVATE}.${iface.name}___CACHE`;
+
+  // some internal methods
+  methods.jsmethods.push({
+    isStatic: true,
+    name: '__setCache',
+    src: `(obj) {
+  ${cache}[obj.ptr] = obj;
+}`});
+
+  methods.jsmethods.push({
+    isStatic: true,
+    name: '__wrap',
+    src: `(ptr) {
+  let obj = ${cache}[ptr];
+  if (!obj) {
+    obj = Object.create(${iface.name}.prototype);
+    obj.ptr = ptr;
+    ${cache}[ptr] = obj;
+  }
+  return obj;
+}`});
+
+  methods.jsmethods.push({
+    isStatic: true,
+    name: '__wrapNoCache',
+    src: `(ptr) {
+  obj = Object.create(${iface.name}.prototype);
+  obj.ptr = ptr;
+  return obj;
+}`});
+
+  if (!iface.noDestroy) {
+    methods.jsmethods.push({
+      name: 'destroy',
+      src: `() {
+  _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
+  delete ${cache}[this.ptr];
+  delete this.ptr;
+}`});
+  }
+    
   let js = `
 ${cache} = {};
 ${MODULE}.${iface.name} =
 class ${iface.name} ${superclass ? `extends ${MODULE}.${superclass} ` : ''}{
-${constructors.js}
-${methods.js}
+  constructor${indentLines(constructor.js, '  ')}
+${methods.jsmethods.map((m) => (m.isStatic ? '  static ' : '  ') + m.name + indentLines(m.src, '  ')).join("\n")}
 ${attributes.js}
-  static __setCache(obj) {
-    ${cache}[obj.ptr] = obj;
-  }
-
-  static __wrap(ptr) {
-    let obj = ${cache}[ptr];
-    if (!obj) {
-      obj = Object.create(${iface.name}.prototype);
-      obj.ptr = ptr;
-      ${cache}[ptr] = obj;
-    }
-    return obj;
-  }
-
-  static __wrapNoCache(ptr) {
-    let obj = Object.create(${iface.name}.prototype);
-    obj.ptr = ptr;
-    return obj;
-  }
-`;
-  if (!iface.noDestroy) {
-    js += `
-  destroy() {
-    _${CppNameFor(iface.name, DESTRUCTOR, 0)}(this.ptr);
-    delete ${cache}[this.ptr];
-    delete this.ptr;
-   }
-`;
-  }
-
-  js += '};\n'; // semicolon because we're assigning to ${MODULE}.${iface.name} as well
+};
+`; // semicolon because we're assigning to ${MODULE}.${iface.name} as well
 
   // The C++ is simpler
-  let cpp = [constructors.cpp, methods.cpp, attributes.cpp].join("\n");
+  let cpp = [constructor.cpp, methods.cpp, attributes.cpp].join("\n");
 
   return { js: js, cpp: cpp };
 }
