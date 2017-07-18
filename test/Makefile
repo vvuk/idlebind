@@ -2,8 +2,8 @@ all: out.js
 
 EMCCFLAGS := -std=c++11
 
-gen-bindings.cpp: test.idl ../bindgen.js Makefile
-	node ../bindgen.js test.idl gen-bindings Bindings
+gen-bindings.cpp: test.idl ../idlebind.js Makefile
+	node ../idlebind.js test.idl gen-bindings Bindings
 
 out.js: test.cpp gen-bindings.cpp gen-bindings.js test.js Makefile
 	emcc $(EMCCFLAGS) -o out-pre.js test.cpp

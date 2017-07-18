@@ -1,12 +1,12 @@
 {
-  "name": "jsbindgen",
+  "name": "idlebind",
   "version": "0.1.0",
   "description": "WebIDL bindings generator",
-  "main": "bindgen.js",
+  "main": "idlebind.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
+  "author": "Vladimir Vukicevic <vladv@unity3d.com.",
   "license": "MIT",
   "dependencies": {
     "prettyjson": "^1.2.1",
